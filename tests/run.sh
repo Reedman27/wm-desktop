@@ -31,6 +31,14 @@ build/wmapps exec htop -t "kitty -e" $F | tr '\n' '|' | grep -qF 'kitty|-e|htop|
 build/wmapps exec nonexistent-app $F 2>/dev/null && fail "exec: unknown app must fail"
 build/wmapps skipped $F > build/skipped.txt
 [ ! -s build/skipped.txt ] || fail "skipped: fixtures are all valid, got: $(cat build/skipped.txt)"
+# icons: every app gets a PNG/XPM, nothing is svg
+IC=$(mktemp -d); IC_OUT=$(XDG_CACHE_HOME="$IC" $W icons $F) || fail "icons: an app was left without an icon"
+[ "$(echo "$IC_OUT" | wc -l)" -eq 4 ]                                  || fail "icons: one line per app"
+echo "$IC_OUT" | grep -q '^theme .*org.gnome.Calculator.*128x128'      || fail "icons: calculator should use its theme icon"
+echo "$IC_OUT" | grep -q '^generated .*htop .*\.xpm$'                 || fail "icons: htop has no icon and should get a drawn one"
+! echo "$IC_OUT" | grep -qi '\.svg$'                                  || fail "icons: svg handed out"
+XDG_CACHE_HOME=/proc/nope $W icons $F >/dev/null 2>&1 && fail "icons: unwritable cache must report missing icons"
+rm -rf "$IC"
 echo "all WMApps tests passed"
 
 # ---- wmmenud: live inotify behaviour ----

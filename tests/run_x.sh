@@ -9,11 +9,28 @@ cleanup() { for p in $PIDS; do kill "$p" 2>/dev/null; done; rm -rf "$T"; }
 trap cleanup EXIT
 
 # ---- no display needed ----
-export HOME=/nonexistent XDG_DATA_HOME=/nonexistent XDG_DATA_DIRS="$FIX/share" WMDOCK_APPDIR="$FIX/share" LANG=C
+export XDG_CACHE_HOME="$T/cache" HOME=/nonexistent XDG_DATA_HOME=/nonexistent XDG_DATA_DIRS="$FIX/share" WMDOCK_APPDIR="$FIX/share" LANG=C
 build/wmdock state org.gnome.Calculator | grep -q 'Name = "gnome-calculator.Gnome-calculator"' || fail "dock state name"
 build/wmdock state org.gnome.Calculator | grep -q 'Command = "gnome-calculator"'              || fail "dock state command"
 build/wmdock attrs | grep -q 'icons/hicolor/128x128/apps/org.gnome.Calculator.png'            || fail "icon: should prefer larger raster over smaller"
-build/wmdock attrs | grep -q vtool && fail "icon: svg-only app must not be given to Window Maker"
+build/wmdock attrs | grep -q 'vtool.Vtool.*Icon' || fail "icon: svg-only app still needs an icon"
+build/wmdock attrs | grep -qi '\.svg' && fail "icon: svg must never be given to Window Maker"
+[ "$(build/wmdock attrs | grep -c Icon)" -eq 4 ]                                              || fail "icon: every app should get an icon"
+
+# apply-icons: fresh file, then merge into a hand-written one without clobbering it
+export WMDOCK_ATTRS_FILE="$T/attrs"
+build/wmdock apply-icons 2>/dev/null                                                            || fail "apply-icons: fresh file"
+[ "$(grep -c Icon "$T/attrs")" -eq 4 ] && head -1 "$T/attrs" | grep -qx '{' && tail -1 "$T/attrs" | grep -qx '}' || fail "apply-icons: fresh file shape"
+build/wmdock apply-icons 2>&1 | grep -q 'nothing to add'                                        || fail "apply-icons: second run must add nothing"
+printf '{\n  "htop.Htop" = { Icon = "/mine.png"; };\n  "*" = { NoTitlebar = Yes; };\n}\n' > "$T/attrs"
+build/wmdock apply-icons 2>/dev/null                                                            || fail "apply-icons: merge"
+grep -q '"htop.Htop" = { Icon = "/mine.png"; }' "$T/attrs"                                     || fail "apply-icons: overwrote an existing entry"
+[ "$(grep -c 'htop.Htop' "$T/attrs")" -eq 1 ]                                                  || fail "apply-icons: duplicated an existing entry"
+grep -q 'NoTitlebar' "$T/attrs" && grep -q 'gnome-calculator.Gnome-calculator' "$T/attrs"       || fail "apply-icons: merge lost or missed entries"
+ls "$T"/attrs.bak-* >/dev/null 2>&1                                                            || fail "apply-icons: no backup"
+printf 'not a plist' > "$T/attrs"; build/wmdock apply-icons 2>/dev/null && fail "apply-icons: touched a non-dict file"
+[ "$(cat "$T/attrs")" = "not a plist" ]                                                        || fail "apply-icons: changed a file it refused"
+unset WMDOCK_ATTRS_FILE
 
 export WMCONFIG_FILE="$T/settings.conf"
 build/wmsettings set focus sloppy && build/wmsettings set animations off || fail "settings set"

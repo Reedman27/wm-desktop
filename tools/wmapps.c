@@ -5,9 +5,11 @@
  *   wmapps menu [-t term] [-o file]      categorized Window Maker root-menu plist
  *   wmapps launch ID [FILE|URL...]       start an app detached, no shell (-t term for Terminal=true apps)
  *   wmapps exec ID [FILE|URL...]         print the command that launch would run (argv, one per line)
+ *   wmapps icons [-s SIZE]               which icon file each app gets, and how it was found (theme/converted/category/generated)
  *   wmapps skipped                       desktop files that are broken (not merely hidden), with the reason
  * Common options: --dir D (extra data dir, highest priority), --desktop NAME (OnlyShowIn/NotShowIn). */
 #include "../core/applications/wmapps.h"
+#include "../core/applications/wmicons.h"
 #include "../core/applications/wmmenu.h"
 #include "../core/configuration/wmconfig.h"
 #include <stdio.h>
@@ -30,24 +32,25 @@ static void jstr(FILE *o, const char *s) {
 }
 
 static void usage(void) {
-    fputs("usage: wmapps list | json | skipped | menu [-t term] [-o file]\n"
+    fputs("usage: wmapps list | json | skipped | icons [-s SIZE] | menu [-t term] [-o file]\n"
           "              | launch ID [FILE|URL...] [-t term] | exec ID [FILE|URL...]\n"
           "       options: --dir D  --desktop NAME\n", stderr);
 }
 
 int main(int argc, char **argv) {
     if (argc < 2) { usage(); return 2; }
-    const char *cmd = argv[1], *term = NULL, *out = NULL, *dir = NULL, *desktop = NULL, *id = NULL;
+    const char *cmd = argv[1], *term = NULL, *out = NULL, *dir = NULL, *desktop = NULL, *id = NULL; int isize = 64;
     const char **files = calloc((size_t)argc, sizeof *files); size_t nfiles = 0;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "-t") && i + 1 < argc) term = argv[++i];
         else if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
         else if (!strcmp(argv[i], "--dir") && i + 1 < argc) dir = argv[++i];
         else if (!strcmp(argv[i], "--desktop") && i + 1 < argc) desktop = argv[++i];
+        else if (!strcmp(argv[i], "-s") && i + 1 < argc) isize = atoi(argv[++i]);
         else if (!strcmp(cmd, "launch") || !strcmp(cmd, "exec")) { if (!id) id = argv[i]; else files[nfiles++] = argv[i]; }
         else { usage(); return 2; }
     }
-    WMAppRegistry r; wmapps_scan(&r, desktop, dir);
+    WMAppRegistry r; wmapps_scan(&r, desktop, dir); wmicons_set_dir(dir);
     qsort(r.apps, r.count, sizeof *r.apps, cmp);
     FILE *o = out ? fopen(out, "w") : stdout; if (!o) { perror(out); return 1; }
     int rc = 0;
@@ -74,6 +77,14 @@ int main(int argc, char **argv) {
                     a->origin == WMAPP_FLATPAK ? "flatpak" : "native", i + 1 < r.count ? "," : "");
         }
         fputs("]\n", o);
+    } else if (!strcmp(cmd, "icons")) {
+        int missing = 0;
+        for (size_t i = 0; i < r.count; i++) {
+            char path[4096]; WMIconSource src = wmicons_for_app(&r.apps[i], isize, path, sizeof path);
+            if (src == WMICON_NONE) missing++;
+            fprintf(o, "%-10s %-32s %s\n", wmicons_source_name(src), r.apps[i].id, path[0] ? path : "-");
+        }
+        if (missing) { fprintf(stderr, "wmapps: %d app(s) without an icon (is the icon cache writable?)\n", missing); rc = 1; }
     } else if (!strcmp(cmd, "skipped")) {
         for (size_t i = 0; i < r.nskipped; i++) fprintf(o, "%s\n", r.skipped[i]);
     } else if (!strcmp(cmd, "menu")) {

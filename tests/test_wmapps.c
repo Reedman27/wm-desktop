@@ -3,6 +3,7 @@
  * ID masking, locale selection, nested dirs, launching (no shell), and WMWatch.
  * Builds its own throw-away data dirs under a mkdtemp() directory. */
 #include "../core/applications/wmapps.h"
+#include "../core/applications/wmicons.h"
 #include "../core/applications/wmmenu.h"
 #include "../core/applications/wmwatch.h"
 #include <poll.h>
@@ -235,8 +236,60 @@ static void test_watch(void) {
     wmwatch_close(w);
 }
 
+static int ends(const char *s, const char *e) { size_t n = strlen(s), k = strlen(e); return n >= k && !strcmp(s + n - k, e); }
+
+static void test_icons(void) {
+    char cache[700], data[700], out[4096];
+    snprintf(data, sizeof data, "%s/ic", root); snprintf(cache, sizeof cache, "%s/cache", root);
+    setenv("XDG_DATA_DIRS", data, 1); setenv("XDG_DATA_HOME", "/nonexistent", 1); setenv("XDG_CACHE_HOME", cache, 1);
+    put("ic/icons/hicolor/48x48/apps/own.png", "PNG");
+    put("ic/icons/hicolor/48x48/apps/by-id.png", "PNG");
+    put("ic/icons/hicolor/48x48/apps/bybin.png", "PNG");
+    put("ic/icons/hicolor/scalable/apps/vector.svg",
+        "<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><rect width='64' height='64' fill='red'/></svg>");
+    put("ic/icons/Adwaita/48x48/apps/applications-games.png", "PNG");
+    put("ic/applications/own.desktop", "[Desktop Entry]\nType=Application\nName=Own\nExec=own\nIcon=own\n");
+    put("ic/applications/by-id.desktop", "[Desktop Entry]\nType=Application\nName=By Id\nExec=x\nIcon=does-not-exist\n");
+    put("ic/applications/broken-path.desktop", "[Desktop Entry]\nType=Application\nName=Broken\nExec=bybin\nIcon=/no/such/file.png\n");
+    put("ic/applications/vector.desktop", "[Desktop Entry]\nType=Application\nName=Vector\nExec=vector\nIcon=vector\n");
+    put("ic/applications/game.desktop", "[Desktop Entry]\nType=Application\nName=Gamey\nExec=gamey\nCategories=Game;\n");
+    put("ic/applications/plain.desktop", "[Desktop Entry]\nType=Application\nName=Plain\nExec=plain\nCategories=Office;\n");
+    put("ic/applications/other.desktop", "[Desktop Entry]\nType=Application\nName=Otherwise\nExec=otherwise\n");
+
+    WMAppRegistry r; wmapps_scan(&r, NULL, NULL); CHECK(r.count == 7);
+    const WMApp *a;
+
+    CHECK((a = by_id(&r, "own")) && wmicons_for_app(a, 64, out, sizeof out) == WMICON_THEME && ends(out, "own.png"));
+    /* Icon= names nothing: the desktop-file ID is tried next */
+    CHECK((a = by_id(&r, "by-id")) && wmicons_for_app(a, 64, out, sizeof out) == WMICON_THEME && ends(out, "by-id.png"));
+    /* Icon= is an absolute path that does not exist: fall back to the binary name */
+    CHECK((a = by_id(&r, "broken-path")) && wmicons_for_app(a, 64, out, sizeof out) == WMICON_THEME && ends(out, "bybin.png"));
+    /* svg-only: either rendered to a PNG, or (no converter installed) drawn; never handed back as svg */
+    CHECK((a = by_id(&r, "vector")));
+    WMIconSource s = wmicons_for_app(a, 64, out, sizeof out);
+    CHECK((s == WMICON_CONVERTED && ends(out, ".png")) || (s == WMICON_GENERATED && ends(out, ".xpm")));
+    CHECK(!ends(out, ".svg"));
+    CHECK(wmicons_resolve("vector", 64, out, sizeof out) == 2);       /* low level still reports svg-only */
+    /* no icon of its own: the theme's category icon, from a non-hicolor theme */
+    CHECK((a = by_id(&r, "game")) && wmicons_for_app(a, 64, out, sizeof out) == WMICON_CATEGORY && ends(out, "applications-games.png"));
+    /* nothing anywhere: a drawn tile that really is an XPM, same file every time, different per letter/category */
+    char p1[4096], p2[4096], p3[4096];
+    CHECK((a = by_id(&r, "plain")) && wmicons_for_app(a, 64, p1, sizeof p1) == WMICON_GENERATED && ends(p1, ".xpm"));
+    CHECK(wmicons_for_app(a, 64, p2, sizeof p2) == WMICON_GENERATED); CHECK_STR(p2, p1);
+    CHECK((a = by_id(&r, "other")) && wmicons_for_app(a, 64, p3, sizeof p3) == WMICON_GENERATED); CHECK(strcmp(p3, p1));
+    FILE *f = fopen(p1, "r"); char head[16] = ""; if (f) { if (!fgets(head, sizeof head, f)) head[0] = 0; fclose(f); }
+    CHECK(!strncmp(head, "/* XPM */", 9));
+    /* every app in the registry ends up with something */
+    for (size_t i = 0; i < r.count; i++) CHECK(wmicons_for_app(&r.apps[i], 64, out, sizeof out) != WMICON_NONE && out[0]);
+    /* cache directory not writable and no icon found: NONE, empty path, no crash */
+    setenv("XDG_CACHE_HOME", "/proc/nope", 1);
+    CHECK((a = by_id(&r, "other")) && wmicons_for_app(a, 64, out, sizeof out) == WMICON_NONE && !out[0]);
+    CHECK((a = by_id(&r, "own")) && wmicons_for_app(a, 64, out, sizeof out) == WMICON_THEME);   /* theme hits need no cache */
+    wmapps_free(&r);
+}
+
 int main(void) {
-    test_tokenize(); test_quote(); test_registry(); test_launch(); test_watch();
+    test_tokenize(); test_quote(); test_registry(); test_launch(); test_watch(); test_icons();
     rm_rf(root);
     if (failures) { fprintf(stderr, "%d of %d checks FAILED\n", failures, checks); return 1; }
     printf("all %d WMApps unit checks passed\n", checks);

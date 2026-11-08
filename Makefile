@@ -21,9 +21,9 @@ BINS = build/wmapps build/wmmenud build/wmgfx build/wmdock build/wmsettings buil
 
 all: $(BINS)
 
-build/wmapps: tools/wmapps.c $(APPS) $(MENU) $(CONF) $(HDRS)
+build/wmapps: tools/wmapps.c $(APPS) $(MENU) $(ICONS) $(CONF) $(HDRS)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/wmapps.c $(APPS) $(MENU) $(CONF)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/wmapps.c $(APPS) $(MENU) $(ICONS) $(CONF)
 build/wmmenud: tools/wmmenud.c $(APPS) $(MENU) $(WATCH) $(CONF) $(HDRS)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -D_GNU_SOURCE -o $@ tools/wmmenud.c $(APPS) $(MENU) $(WATCH) $(CONF)
@@ -45,9 +45,9 @@ build/wmgfx: backends/x11/wmgfx.c
 build/fakewm: tests/fakewm.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) -o $@ tests/fakewm.c $(X11LIBS)
-build/test_wmapps: tests/test_wmapps.c $(APPS) $(MENU) $(WATCH) $(HDRS)
+build/test_wmapps: tests/test_wmapps.c $(APPS) $(MENU) $(WATCH) $(ICONS) $(HDRS)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -D_GNU_SOURCE -o $@ tests/test_wmapps.c $(APPS) $(MENU) $(WATCH)
+	$(CC) $(CFLAGS) $(LDFLAGS) -D_GNU_SOURCE -o $@ tests/test_wmapps.c $(APPS) $(MENU) $(WATCH) $(ICONS)
 
 install: all
 	install -d $(DESTDIR)$(PREFIX)/bin

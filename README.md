@@ -41,17 +41,33 @@ mtime changes. Options: `-t "kitty -e"` (terminal for `Terminal=true` apps; defa
     wmapps launch org.gnome.gedit ~/notes.txt    # with files (paths or URLs)
     wmapps exec htop -t "kitty -e"               # show the argv launch would run, one per line
     wmapps skipped                               # .desktop files that are broken, with the reason
+    wmapps icons [-s 64]                         # the icon file every app gets, and how it was found
 `launch` takes an app ID (or a `StartupWMClass`). Use it for keybindings in WPrefs, e.g. `wmapps launch firefox`.
 
 ### 3. wmdock — help for Window Maker's own Dock
     wmdock list                       # running windows -> which app they belong to (tab separated)
     wmdock watch                      # same, as a live stream of open/close lines
     wmdock state firefox htop         # Dock entries to paste into ~/GNUstep/Defaults/WMState
-    wmdock attrs                      # WMWindowAttributes snippet giving each app its icon
+    wmdock attrs                      # WMWindowAttributes snippet: every app gets an icon (see "Icons" below)
+    wmdock apply-icons [--dry-run]    # merge those icons into ~/GNUstep/Defaults/WMWindowAttributes for you
 Window Maker rewrites `WMState` when it exits, so stop it (or edit before login) when pasting. The
 generated `Name = "instance.Class"` is a best guess from `StartupWMClass`/`Exec`; if an icon docks but does
-not match its window, run the app, check `wmdock list`, and correct the name by hand. Apps whose only icon
-is SVG get no icon entry (Window Maker cannot load SVG): `wmdock attrs` skips them.
+not match its window, run the app, check `wmdock list`, and correct the name by hand. `apply-icons` does the pasting for you: it copies the file to `WMWindowAttributes.bak-<time>`, adds entries only for apps that don't have one yet (yours are never changed), and refuses a file that isn't a `{ ... }` dictionary. Restart Window Maker afterwards.
+Every app gets an icon entry:
+`wmdock attrs` never hands Window Maker an SVG and never skips an app (see "Icons" below).
+
+### Icons — every app gets one
+Window Maker only loads PNG and XPM, and many `.desktop` files have a missing, misnamed or SVG-only icon.
+`wmapps icons` shows what each app gets; `wmdock attrs` hands the same files to Window Maker. Each app goes down this ladder
+and stops at the first rung that works:
+
+1. **theme** - the app's `Icon=` (name or absolute path), then its Flatpak ID, desktop-file ID, `StartupWMClass` and binary name, searched in `hicolor` and every other installed theme (a raster of at least 3/4 of the wanted size beats an SVG; a tiny raster loses to one).
+2. **converted** - an SVG-only icon is rendered to a PNG in `~/.cache/wm-desktop/icons` by `rsvg-convert`, ImageMagick (`magick`/`convert`) or `inkscape`, whichever is installed. Cached; redone only when the SVG changes.
+3. **category** - the theme's generic icon for the app's menu category (`applications-games`, `applications-internet`, ...).
+4. **generated** - a drawn XPM tile: category colour, bevelled border, the app's initial. Needs nothing installed.
+
+An app only ends up without an icon if none of that exists *and* the cache directory (`$XDG_CACHE_HOME/wm-desktop/icons`) cannot be written; `wmapps icons` then exits 1 and says so.
+Install `librsvg` (`rsvg-convert`) for the best SVG results. **Window Maker's own menus cannot show icons**, so `wmmenud` output is unchanged; icons appear on the Dock, the Clip and mini-windows through `WMWindowAttributes`.
 
 ### 4. wmsettings — a few Window Maker options in one file
     wmsettings list                         # key, value, allowed values
@@ -90,7 +106,7 @@ Everything else consumes this; nothing else scans application directories.
 | `wmapps.c/.h` | Scans XDG + Flatpak `.desktop` files; tokenizes `Exec`, expands field codes, launches without a shell |
 | `wmmenu.c/.h` | Registry → categorized Window Maker plist menu |
 | `wmwatch.c/.h` | Recursive inotify watcher over every scanned `applications/` tree |
-| `wmicons.c/.h` | Icon name → PNG/XPM file Window Maker can load |
+| `wmicons.c/.h` | App → PNG/XPM file Window Maker can load, always: theme lookup, SVG conversion, category icon, drawn tile |
 | `core/configuration/wmconfig.c` | `~/.config/wm-desktop/settings.conf` (`key = value`) |
 
 - **Identity:** desktop-file IDs per spec (`vendor/tool.desktop` → `vendor-tool`), any nesting depth (capped at 8, also bounding symlink loops).
@@ -109,10 +125,11 @@ Everything else consumes this; nothing else scans application directories.
 - Duplicate detection beyond the desktop-file ID (a native and a Flatpak build have different IDs and both appear).
 - Existence check of the `Exec` binary (only `TryExec` is checked).
 - Data dirs that do not exist at daemon start are found by a 60-second timer, unless their parent is missing too.
-- Icons: directory search over installed themes, not the full `index.theme` algorithm (`Inherits`, `Threshold`).
+- Icons: directory search over installed themes, not the full `index.theme` algorithm (`Inherits`, `Threshold`); no `-symbolic` or `@2x` variants. `hicolor` is searched first, then the other themes in directory order, so the theme you actually use is not preferred yet.
 
 ## Verification status (honest)
-- `make check` passes: 93 unit checks plus shell suites, also under ASan/UBSan. Dock window matching was run under Xvfb against a fake EWMH window manager (`tests/fakewm.c`).
+- `make check` passes: 117 unit checks plus shell suites, also under ASan/UBSan. Dock window matching was run under Xvfb against a fake EWMH window manager (`tests/fakewm.c`).
+- Icons: 24 unit checks cover the ladder (own icon, ID/binary fallbacks, broken absolute path, SVG, category icon, drawn tile, unwritable cache). SVG conversion was run for real with `rsvg-convert` (64x64 PNG, cached on the second run); the ImageMagick and Inkscape branches are untested.
 - **Not tested:** `wmnotify` (no libdbus headers in the build sandbox), the `xdotool`-driven `wmfiles` test, `wmgfx` on real hardware (only fake `/sys` data), and every tool against a *running* Window Maker. Menu syntax and escaping were checked against the Window Maker source.
 - `themes/nextstep/palette.h` still styles `wmnotify` and `wmfiles` (purely cosmetic leftover; easy to drop).
 - No license file yet: choose one before publishing. Reference projects have their own terms (Window Maker is GPL-2.0-or-later).
