@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Say "Hi" 100%%
+Exec=sh -c "echo hi %%; sleep 1" %F
+Categories=Game;

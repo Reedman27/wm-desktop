@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Calculator
+Name[de]=Taschenrechner
+Comment=Perform arithmetic
+Exec=gnome-calculator %U
+Icon=org.gnome.Calculator
+Categories=GNOME;GTK;Utility;Calculator;
+StartupWMClass=gnome-calculator
