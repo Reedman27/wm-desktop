@@ -163,12 +163,9 @@ static void test_registry(void) {
     put("lo/applications/evil.desktop", "[Desktop Entry]\nType=Application\nName=Evil \"Q\"\nExec=sh -c \"echo %%w; rm -rf $HOME\\\\\\\\\"\nCategories=Game;\n");
     wmapps_free(&r); wmapps_scan(&r, NULL, NULL);
     char *mb = NULL; size_t ml = 0; FILE *m = open_memstream(&mb, &ml);
-    wmmenu_emit_applications(m, &r, WMMENU_X11, "xterm -e"); fclose(m);
+    wmmenu_emit_applications(m, &r, "xterm -e"); fclose(m);
     CHECK(strstr(mb, "(\"Evil \\\"Q\\\"\", SHEXEC, \"sh -c 'echo \\\\%w; rm -rf $HOME\\\\\\\\'\")") != NULL);
-    free(mb); m = open_memstream(&mb, &ml);
-    wmmenu_emit_applications(m, &r, WMMENU_WAYLAND, "xterm -e"); fclose(m);
-    CHECK(strstr(mb, "ShellExecute, \"sh -c 'echo %w; rm -rf $HOME\\\\'\")") != NULL);
-    CHECK(strstr(mb, "ShellExecute, \"xterm -e htop\")") != NULL);
+    CHECK(strstr(mb, "SHEXEC, \"xterm -e htop\")") != NULL);
     free(mb);
     wmapps_free(&r);
 }

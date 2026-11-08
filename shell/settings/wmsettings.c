@@ -3,10 +3,9 @@
  *
  *   wmsettings list                  every key with its current value
  *   wmsettings get KEY | set KEY VAL
- *   wmsettings apply [-b x11|wayland] [--dry-run]
+ *   wmsettings apply [--dry-run]
  *
- * X11: translated to Window Maker defaults through its own 'wdwrite' tool.
- * Wayland: wlmaker has no equivalent keys for these yet, so apply says so instead of guessing. */
+ * Translated to Window Maker defaults through Window Maker's own 'wdwrite' tool. */
 #include "../../core/configuration/wmconfig.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,7 +53,7 @@ static const char *translate(const Setting *s, const char *v, char *buf, size_t 
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fputs("usage: wmsettings list|get KEY|set KEY VALUE|apply [-b x11|wayland] [--dry-run]\n", stderr); return 2; }
+    if (argc < 2) { fputs("usage: wmsettings list|get KEY|set KEY VALUE|apply [--dry-run]\n", stderr); return 2; }
     if (!strcmp(argv[1], "list")) {
         for (size_t i = 0; i < NS; i++) printf("%-10s = %-12s  (%s)\n", S[i].key, wmconfig_get(S[i].key, S[i].def), *S[i].choices ? S[i].choices : "text");
     } else if (!strcmp(argv[1], "get") && argc == 3) {
@@ -65,9 +64,8 @@ int main(int argc, char **argv) {
         if (!valid(s, argv[3])) { fprintf(stderr, "wmsettings: %s must be %s\n", s->key, !*s->choices ? "non-empty" : !strncmp(s->choices, "int:", 4) ? s->choices + 4 : s->choices); return 1; }
         return wmconfig_set(s->key, argv[3]) ? (perror("wmsettings"), 1) : 0;
     } else if (!strcmp(argv[1], "apply")) {
-        const char *be = "x11"; int dry = 0;
-        for (int i = 2; i < argc; i++) { if (!strcmp(argv[i], "-b") && i + 1 < argc) be = argv[++i]; else if (!strcmp(argv[i], "--dry-run")) dry = 1; }
-        if (!strcmp(be, "wayland")) { puts("wayland: wlmaker has no matching configuration keys yet; nothing applied"); return 0; }
+        int dry = 0;
+        for (int i = 2; i < argc; i++) if (!strcmp(argv[i], "--dry-run")) dry = 1;
         int rc = 0;
         for (size_t i = 0; i < NS; i++) {
             if (!S[i].wm_key) continue;
@@ -79,6 +77,6 @@ int main(int argc, char **argv) {
             if (!WIFEXITED(st) || WEXITSTATUS(st)) { fprintf(stderr, "wmsettings: wdwrite failed for %s (is Window Maker's wdwrite installed?)\n", S[i].wm_key); rc = 1; }
         }
         return rc;
-    } else { fputs("usage: wmsettings list|get KEY|set KEY VALUE|apply [-b x11|wayland] [--dry-run]\n", stderr); return 2; }
+    } else { fputs("usage: wmsettings list|get KEY|set KEY VALUE|apply [--dry-run]\n", stderr); return 2; }
     return 0;
 }

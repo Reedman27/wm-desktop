@@ -22,7 +22,6 @@ build/wmsettings set focus bogus 2>/dev/null && fail "settings accepted bad choi
 [ "$(build/wmsettings get focus)" = "sloppy" ]                    || fail "settings get"
 build/wmsettings apply --dry-run | grep -q 'FocusMode Sloppy'     || fail "settings -> FocusMode"
 build/wmsettings apply --dry-run | grep -q 'DisableAnimations YES' || fail "settings inverted bool"
-build/wmsettings apply -b wayland | grep -q 'nothing applied'      || fail "settings wayland honesty"
 printf '# keep me\nterminal = foot -e\n' > "$WMCONFIG_FILE"; build/wmsettings set focus click
 grep -q '^# keep me' "$WMCONFIG_FILE"                              || fail "settings dropped comments"
 build/wmmenud --once -o "$T/m" --dir "$FIX/share" 2>/dev/null; grep -q 'foot -e htop' "$T/m" || fail "wmmenud ignores shared terminal setting"

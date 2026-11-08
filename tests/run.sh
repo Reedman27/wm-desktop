@@ -13,12 +13,10 @@ grep -q "vendor-tool" build/list.txt           || fail "vendor subdir id prefix"
 ! grep -q "Not Installed" build/list.txt       || fail "TryExec ignored"
 [ "$(wc -l < build/list.txt)" -eq 4 ]          || fail "expected 4 apps"
 LANG=de_DE.UTF-8 $W list $F | grep -q Taschenrechner || fail "localized name"
-$W menu x11 $F > build/x11.menu
+$W menu $F > build/x11.menu
 grep -q 'SHEXEC, "xterm -e htop"' build/x11.menu     || fail "terminal wrap"
 grep -q 'gnome-calculator")' build/x11.menu          || fail "field code not stripped"
 grep -qF "sh -c 'echo hi \\\\%; sleep 1'" build/x11.menu || fail "x11: % must be escaped for Window Maker's ExpandOptions"
-build/wmapps menu wayland $F | grep -qF "sh -c 'echo hi %; sleep 1'" || fail "wayland: command must not get WM escaping"
-$W menu wayland $F | grep -q ShellExecute            || fail "wayland action name"
 python3 - <<'PY'
 import re
 s = open('build/x11.menu').read()
