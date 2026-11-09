@@ -8,10 +8,16 @@
  * /usr/local/etc, or $WMTHEME_GLOBAL). Keys the user file lacks come from the global file, then
  * from Window Maker's own built-in defaults, exactly as Window Maker resolves them.
  *
- * Textures such as (dgradient, "rgb:a6/a6/b6", "rgb:51/55/61") are reduced to their first colour. */
+ * Textures such as (dgradient, "rgb:a6/a6/b6", "rgb:51/55/61") are kept in full in menu_text_tex /
+ * menu_title_tex (kind plus colours); menu_text_back / menu_title_back still hold the first colour for callers
+ * that only want a flat fill. Pixmap textures keep their fallback colour. */
 #ifndef WMTHEME_H
 #define WMTHEME_H
 #include <stddef.h>
+
+typedef enum { WMTEX_SOLID, WMTEX_HGRAD, WMTEX_VGRAD, WMTEX_DGRAD, WMTEX_MHGRAD, WMTEX_MVGRAD, WMTEX_MDGRAD } WMTexKind;
+#define WMTEX_MAXC 12
+typedef struct { WMTexKind kind; int n; char color[WMTEX_MAXC][64]; } WMTexture;   /* n >= 1 */
 
 typedef struct {
     /* colour strings exactly as written in the style file (X colour names, #rrggbb, rgb:rr/gg/bb) */
@@ -19,6 +25,7 @@ typedef struct {
     char highlight_color[64], highlight_text_color[64], frame_border_color[64];
     char menu_text_back[64], menu_title_back[64];          /* texture reduced to its first colour */
     char menu_text_font[256], menu_title_font[256];        /* fontconfig-style, e.g. "Sans:bold:pixelsize=12" */
+    WMTexture menu_text_tex, menu_title_tex;               /* the same textures, with every colour and the gradient kind */
     int files_read;                                        /* how many defaults files contributed */
 } WMTheme;
 

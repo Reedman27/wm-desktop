@@ -12,14 +12,28 @@ CONF  = core/configuration/wmconfig.c
 THEME = core/theme/wmtheme.c
 THEMEX = core/theme/wmthemex.c
 HDRS  = $(wildcard core/applications/*.h core/configuration/*.h core/theme/*.h)
+FILEOPS = core/files/wmfileops.c
 X11LIBS = -lX11
+
+# Xft (antialiased UTF-8 text) is required by wmnotify and wmfiles, as it is by Window Maker itself.
+# libwraster (optional) gives exact gradients and PNG/XPM icons; without it gradients fall back to two colours.
+XFT_CFLAGS := $(shell pkg-config --cflags xft 2>/dev/null)
+XFT_LIBS := $(shell pkg-config --libs xft 2>/dev/null)
+WR_CFLAGS := $(shell pkg-config --cflags wrlib 2>/dev/null)
+WR_LIBS := $(shell pkg-config --libs wrlib 2>/dev/null)
+ifneq ($(WR_LIBS),)
+WR_CFLAGS += -DHAVE_WRASTER
+endif
+GUI_CFLAGS = $(XFT_CFLAGS) $(WR_CFLAGS)
+GUI_LIBS = $(XFT_LIBS) $(WR_LIBS) $(X11LIBS)
 
 # wmnotify needs libdbus headers; build it only where they exist.
 DBUS_CFLAGS := $(shell pkg-config --cflags dbus-1 2>/dev/null)
 DBUS_LIBS := $(shell pkg-config --libs dbus-1 2>/dev/null)
-NOTIFY := $(if $(DBUS_LIBS),build/wmnotify)
+HAVE_GUI := $(and $(XFT_LIBS),$(DBUS_LIBS))
+NOTIFY := $(if $(HAVE_GUI),build/wmnotify build/wmnotify-send)
 
-BINS = build/wmapps build/wmmenud build/wmgfx build/wmdock build/wmsettings build/wmfiles $(NOTIFY)
+BINS = build/wmapps build/wmmenud build/wmgfx build/wmdock build/wmsettings $(if $(XFT_LIBS),build/wmfiles) $(NOTIFY)
 
 all: $(BINS)
 
@@ -35,12 +49,18 @@ build/wmdock: shell/dock/wmdock.c $(APPS) $(MENU) $(ICONS) $(CONF) $(THEME) $(HD
 build/wmsettings: shell/settings/wmsettings.c $(CONF)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ shell/settings/wmsettings.c $(CONF)
-build/wmnotify: shell/notify/wmnotify.c $(THEME) $(THEMEX) $(HDRS)
+build/wmnotify: shell/notify/wmnotify.c $(THEME) $(THEMEX) $(APPS) $(ICONS) $(CONF) $(HDRS)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(DBUS_CFLAGS) $(LDFLAGS) -o $@ shell/notify/wmnotify.c $(THEME) $(THEMEX) $(DBUS_LIBS) $(X11LIBS)
-build/wmfiles: shell/files/wmfiles.c $(THEME) $(THEMEX) $(HDRS)
+	$(CC) $(CFLAGS) $(DBUS_CFLAGS) $(GUI_CFLAGS) -D_GNU_SOURCE $(LDFLAGS) -o $@ shell/notify/wmnotify.c $(THEME) $(THEMEX) $(APPS) $(ICONS) $(CONF) $(DBUS_LIBS) $(GUI_LIBS)
+build/wmnotify-send: shell/notify/wmnotify-send.c
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ shell/files/wmfiles.c $(THEME) $(THEMEX) $(X11LIBS)
+	$(CC) $(CFLAGS) $(DBUS_CFLAGS) $(LDFLAGS) -o $@ shell/notify/wmnotify-send.c $(DBUS_LIBS)
+build/wmfiles: shell/files/wmfiles.c $(THEME) $(THEMEX) $(FILEOPS) $(HDRS) core/files/wmfileops.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(GUI_CFLAGS) -D_GNU_SOURCE $(LDFLAGS) -o $@ shell/files/wmfiles.c $(THEME) $(THEMEX) $(FILEOPS) $(GUI_LIBS)
+build/test_fileops: tests/test_fileops.c $(FILEOPS) core/files/wmfileops.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -D_GNU_SOURCE $(LDFLAGS) -o $@ tests/test_fileops.c $(FILEOPS)
 build/wmgfx: backends/x11/wmgfx.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ backends/x11/wmgfx.c
@@ -69,10 +89,11 @@ install: all
 	  install -d $(DESTDIR)$(PREFIX)/share/icons/hicolor/$$d/apps; \
 	  install -m 644 data/icons/hicolor/$$d/apps/* $(DESTDIR)$(PREFIX)/share/icons/hicolor/$$d/apps/; done
 
-check: $(BINS) build/fakewm build/xprobe build/test_wmapps build/test_wmicons build/test_wmtheme
+check: $(BINS) build/fakewm build/xprobe build/test_wmapps build/test_wmicons build/test_wmtheme build/test_fileops
 	build/test_wmapps
 	build/test_wmicons
 	build/test_wmtheme
+	build/test_fileops
 	sh tests/run.sh
 	sh tests/run_x.sh
 	sh tests/run_gui.sh

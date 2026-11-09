@@ -4,7 +4,7 @@
  *   xprobe pixel ID X Y          colour of one pixel as rrggbb
  *   xprobe count ID RRGGBB       how many pixels of that colour the window has
  *   xprobe click ID X Y          synthetic left click (press + release) at window coordinates
- *   xprobe key ID KEYSYM         synthetic key press + release, e.g. Down, q */
+ *   xprobe key ID KEYSYM         synthetic key press + release, e.g. Down, q, ctrl+c */
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
@@ -49,11 +49,13 @@ int main(int argc, char **argv) {
         }
         XSync(d, False);
     } else if (!strcmp(argv[1], "key") && argc >= 4) {
-        Window w = strtoul(argv[2], NULL, 0); KeySym ks = XStringToKeysym(argv[3]); if (ks == NoSymbol) return 2;
+        Window w = strtoul(argv[2], NULL, 0); const char *kn = argv[3]; unsigned mods = 0;
+        if (!strncmp(kn, "ctrl+", 5)) { mods = ControlMask; kn += 5; }
+        KeySym ks = XStringToKeysym(kn); if (ks == NoSymbol) return 2;
         for (int press = 1; press >= 0; press--) {
             XEvent e; memset(&e, 0, sizeof e);
             e.xkey.type = press ? KeyPress : KeyRelease; e.xkey.window = w; e.xkey.root = DefaultRootWindow(d);
-            e.xkey.keycode = XKeysymToKeycode(d, ks); e.xkey.same_screen = True;
+            e.xkey.keycode = XKeysymToKeycode(d, ks); e.xkey.same_screen = True; e.xkey.state = mods;
             XSendEvent(d, w, True, press ? KeyPressMask : KeyReleaseMask, &e);
         }
         XSync(d, False);

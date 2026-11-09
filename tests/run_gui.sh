@@ -22,7 +22,7 @@ theme() {   # theme MENUBACK TITLEBACK TEXT TITLETEXT HIGHLIGHT
   cat > "$T/gs/Defaults/WindowMaker" <<EOT
 {
   // a comment, as real files have
-  MenuTextBack = (dgradient, "$1", "#000000");
+  MenuTextBack = (${GRAD:-solid}, "$1"${GRAD:+, "#000000"});
   MenuTitleBack = (solid, "$2");
   MenuTextColor = "$3";
   MenuTitleColor = "$4";
@@ -43,7 +43,7 @@ build/wmnotify 2>"$T/nerr" & NP=$!; PIDS="$PIDS $NP"; sleep 1
 grep -q 'theme from 1 Window Maker defaults file' "$T/nerr" || fail "wmnotify did not read the theme file: $(cat "$T/nerr")"
 $NB.GetServerInformation | grep -q wmnotify || fail "GetServerInformation"
 $NB.GetCapabilities | grep -q body            || fail "GetCapabilities"
-$NB.Notify t "uint32 0" "" Hello "Body text that is long enough to need a little wrapping inside the popup" "@as []" "@a{sv} {}" "int32 20000" | grep -q 'uint32 1' || fail "Notify did not return id 1"
+$NB.Notify t "uint32 0" "" Hello "Body text that is long enough to need a little wrapping inside the popup" "@as []" "@a{sv} {}" "int32 120000" | grep -q 'uint32 1' || fail "Notify did not return id 1"
 sleep 0.3
 set -- $($P find WMNotify); [ $# -eq 6 ] || fail "expected one popup window, got: $*"
 W1=$1; [ "$2" = 1 ] || fail "popup not mapped"
@@ -59,14 +59,27 @@ sleep 0.3
 set -- $($P find WMNotify); [ $# -eq 12 ] || fail "expected two popups: $*"
 NEW=""; for w in $1 $7; do [ "$($P pixel $w 300 5)" = "222266" ] && NEW=$w; done
 [ -n "$NEW" ] || fail "second popup did not pick up the changed theme"
-[ "$($P pixel $W1 300 5)" = "aa0000" ] || fail "first popup changed colour retroactively"
+[ "$($P pixel $W1 300 5)" = "222266" ] || fail "open popup did not restyle after a theme change (got $($P pixel $W1 300 5))"
 [ "$($P count $NEW ff00ff)" -gt 0 ] || fail "new MenuTitleColor missing"
+
+# real gradients: a dgradient body runs from its first colour (top-left) to its second (bottom-right)
+GRAD=dgradient theme "#ff0000" "#222266" "#ffffff" "#ffffff" "#ffffff"; bump
+$NB.Notify t "uint32 0" "" Gradient "a body" "@as []" "@a{sv} {}" "int32 20000" | grep -q 'uint32 3' || fail "gradient Notify id"
+sleep 0.4
+for w in $($P find WMNotify | cut -d' ' -f1); do
+  set -- $($P find WMNotify | grep "^$w "); GH=$6; GW=$5
+  A=$($P pixel $w 3 $((GH - 20))); B=$($P pixel $w $((GW - 4)) $((GH - 4)))
+  [ "$A" != "$B" ] && { GOT=1; break; }
+done
+[ -n "${GOT:-}" ] || fail "dgradient body is a flat colour"
+theme "#336699" "rgb:aa/00/00" "#ffffff" "#00ff00" "#ffcc00"; bump; sleep 1.2
+$NB.CloseNotification "uint32 3" >/dev/null; sleep 0.3; [ "$($P find WMNotify | wc -l)" -eq 2 ] || fail "gradient popup not closed: $($P find WMNotify)"
 
 # replaces_id updates in place; CloseNotification removes; critical urgency survives its timeout
 $NB.Notify t "uint32 2" "" Replaced "now with body" "@as []" "@a{sv} {}" "int32 20000" | grep -q 'uint32 2' || fail "replaces_id must keep the id"
 sleep 0.2; [ "$($P find WMNotify | wc -l)" -eq 2 ] || fail "replace created a new popup: $($P find WMNotify)"
 $NB.CloseNotification 2 2>&1 | grep -q InvalidArgs || fail "wrongly typed CloseNotification must be an error"
-$NB.CloseNotification "uint32 2" >/dev/null; sleep 0.2; [ "$($P find WMNotify | wc -l)" -eq 1 ] || fail "CloseNotification did not remove it"
+$NB.CloseNotification "uint32 2" >/dev/null; sleep 0.2; [ "$($P find WMNotify | wc -l)" -eq 1 ] || fail "CloseNotification did not remove it: $($P find WMNotify)"
 $NB.CloseNotification "uint32 1" >/dev/null; sleep 0.2
 $NB.Notify t "uint32 0" "" Urgent "stays" "@as []" "@a{sv} {'urgency': <byte 2>}" "int32 300" | grep -q 'uint32' || fail "critical Notify"
 $NB.Notify t "uint32 0" "" Normal "goes" "@as []" "@a{sv} {'urgency': <byte 1>}" "int32 300" >/dev/null
@@ -103,5 +116,29 @@ grep -q 'Docs/Sub/deep.pdf' "$T/opened" || fail "wmfiles: double-click did not o
 $P key $F q; sleep 0.5
 kill -0 $FP 2>/dev/null && fail "q did not quit wmfiles"
 grep -qE "Sanitizer|runtime error" "$T/ferr" && fail "wmfiles sanitizer report"
+
+# file operations (trash, new folder, rename, copy, cut/paste), driven by keys
+kill $FP 2>/dev/null; sleep 0.3
+FO="$T/fo"; mkdir -p "$FO/zdir"; echo a > "$FO/alpha.txt"; echo b > "$FO/beta.txt"
+XDG_DATA_HOME="$T/xdg" build/wmfiles "$FO" 2>"$T/ferr2" & FP=$!; PIDS="$PIDS $FP"; sleep 1
+F=$($P find WMFiles | cut -d' ' -f1); [ -n "$F" ] || fail "wmfiles (ops) did not start: $(cat "$T/ferr2")"
+k() { for x in "$@"; do $P key $F "$x"; sleep 0.08; done; sleep 0.15; }
+k Down Down Delete                                             # rows: zdir, alpha.txt, beta.txt -> trash alpha.txt
+[ ! -e "$FO/alpha.txt" ] && [ -f "$T/xdg/Trash/files/alpha.txt" ] || fail "Delete did not move alpha.txt to the trash"
+grep -q 'Path=.*alpha.txt' "$T/xdg/Trash/info/alpha.txt.trashinfo" || fail "no .trashinfo for the trashed file"
+k n n e w Return                                               # new folder "new"
+[ -d "$FO/new" ] || fail "n did not create a folder"
+k F2 BackSpace BackSpace BackSpace x y Return                  # rename it to "xy"
+[ -d "$FO/xy" ] && [ ! -e "$FO/new" ] || fail "F2 rename failed"
+k F2 BackSpace BackSpace z d i r Return                        # renaming onto an existing name must not overwrite
+[ -d "$FO/xy" ] && [ -d "$FO/zdir" ] || fail "rename onto an existing name replaced something"
+k F2 Escape                                                    # cancelling changes nothing
+[ -d "$FO/xy" ] || fail "Escape did not cancel rename"
+k Down Down ctrl+c Up Right ctrl+v                             # copy beta.txt into zdir
+[ -f "$FO/zdir/beta.txt" ] && [ -f "$FO/beta.txt" ] || fail "copy/paste failed"
+k Left Down ctrl+x Up Up Right ctrl+v                          # cut beta.txt, paste into xy
+[ -f "$FO/xy/beta.txt" ] && [ ! -e "$FO/beta.txt" ] || fail "cut/paste failed"
+kill -0 $FP 2>/dev/null || fail "wmfiles died during file operations: $(cat "$T/ferr2")"
+grep -qE "Sanitizer|runtime error" "$T/ferr2" && fail "wmfiles ops sanitizer report"
 echo "ok: wmfiles"
 echo "all GUI tests passed"

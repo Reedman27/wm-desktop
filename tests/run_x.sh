@@ -20,6 +20,8 @@ build/wmsettings set focus sloppy && build/wmsettings set animations off || fail
 build/wmsettings set icon_size 500 2>/dev/null && fail "settings accepted out-of-range value"
 build/wmsettings set focus bogus 2>/dev/null && fail "settings accepted bad choice"
 [ "$(build/wmsettings get focus)" = "sloppy" ]                    || fail "settings get"
+build/wmsettings set notify_corner bottom-left && [ "$(build/wmsettings get notify_corner)" = "bottom-left" ] || fail "notify_corner setting"
+build/wmsettings set notify_corner middle 2>/dev/null && fail "notify_corner accepted a bad value"
 build/wmsettings apply --dry-run | grep -q 'FocusMode Sloppy'     || fail "settings -> FocusMode"
 build/wmsettings apply --dry-run | grep -q 'DisableAnimations YES' || fail "settings inverted bool"
 printf '# keep me\nterminal = foot -e\n' > "$WMCONFIG_FILE"; build/wmsettings set focus click

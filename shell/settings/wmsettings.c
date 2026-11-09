@@ -28,6 +28,8 @@ static const Setting S[] = {
     { "dock",      "on",    "on|off", "DisableDock", "NO|YES" },
     { "terminal",  "xterm -e", "", NULL, NULL },          /* used by wmmenud for Terminal=true apps */
     { "icon_theme", "",     "", NULL, NULL },             /* preferred icon theme for wmicons; "" = GTK's, then hicolor */
+    { "notify_corner", "top-right", "top-right|top-left|bottom-right|bottom-left", NULL, NULL },   /* wmnotify */
+    { "notify_timeout", "5000", "int:500-600000", NULL, NULL },                                   /* wmnotify, ms */
 };
 #define NS (sizeof S / sizeof *S)
 

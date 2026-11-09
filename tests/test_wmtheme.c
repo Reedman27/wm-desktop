@@ -38,6 +38,19 @@ int main(void) {
     CHECK(wmtheme_load(&t, u, "/nonexistent") == 1);
     STR(t.menu_text_back, "rgb:a6/a6/b6"); STR(t.menu_title_back, "black");
     STR(t.menu_text_color, "#102030"); STR(t.highlight_color, "gray90"); STR(t.highlight_text_color, "rgb:1/2/3");
+    /* textures keep every colour and their kind, not just the first colour */
+    CHECK(t.menu_text_tex.kind == WMTEX_DGRAD && t.menu_text_tex.n == 2);
+    STR(t.menu_text_tex.color[0], "rgb:a6/a6/b6"); STR(t.menu_text_tex.color[1], "rgb:51/55/61");
+    CHECK(t.menu_title_tex.kind == WMTEX_SOLID && t.menu_title_tex.n == 1);
+    { const char *kinds[][2] = { {"hgradient", "1"}, {"vgradient", "2"}, {"mhgradient", "4"}, {"mvgradient", "5"}, {"mdgradient", "6"} };
+      for (int i = 0; i < 5; i++) {
+          char body[300]; snprintf(body, sizeof body, "{ MenuTextBack = (%s, red, \"#00ff00\", blue); }\n", kinds[i][0]);
+          const char *f = wr("tex", body); WMTheme x; CHECK(wmtheme_load(&x, f, "/nonexistent") == 1);
+          CHECK((int)x.menu_text_tex.kind == atoi(kinds[i][1])); CHECK(x.menu_text_tex.n >= 2);
+          STR(x.menu_text_tex.color[0], "red"); } }
+    { const char *f = wr("bad", "{ MenuTextBack = (dgradient); }\n"); WMTheme x; wmtheme_load(&x, f, "/nonexistent");
+      CHECK(x.menu_text_tex.kind == WMTEX_SOLID && x.menu_text_tex.n == 1); }      /* malformed: falls back to a usable solid */
+
     STR(t.menu_disabled_color, "gray40"); STR(t.menu_text_font, "Noto Sans:pixelsize=14");
     STR(t.menu_title_font, "Noto Sans:bold:pixelsize=14");
 

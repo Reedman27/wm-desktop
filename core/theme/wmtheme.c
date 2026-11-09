@@ -99,17 +99,40 @@ static void take_font(const PL *d, const char *key, char *dst, size_t n) {
     const PL *v = pl_get(d, key);
     if (v && v->type == 0 && v->s[0]) put(dst, n, v->s);
 }
-/* (solid, c) (xgradient, c1, c2 ...) (tpixmap, file, c) or a bare colour string -> one colour */
-static void take_texture(const PL *d, const char *key, char *dst, size_t n) {
+/* Parses (solid, c) (h|v|dgradient, c1, c2) (mh|mv|mdgradient, c1, c2, ...) (xpixmap, file, c) (thgradient, file, op, c1, c2)
+ * (igradient, c1, ...) into a texture. Returns 0 (and leaves *t alone) for anything unreadable. */
+static int parse_tex(const PL *v, WMTexture *t) {
+    if (!v || v->type != 1 || v->n < 2 || v->v[0]->type != 0) return 0;
+    const char *kind = v->v[0]->s; size_t k = strlen(kind), n = v->n; WMTexture o; memset(&o, 0, sizeof o);
+    #define COL(i) ((i) < n && v->v[i]->type == 0 && v->v[i]->s[0] ? v->v[i]->s : NULL)
+    if (!strcasecmp(kind, "solid") && COL(1)) { o.kind = WMTEX_SOLID; put(o.color[0], 64, COL(1)); o.n = 1; }
+    else if (!strcasecmp(kind, "hgradient") || !strcasecmp(kind, "vgradient") || !strcasecmp(kind, "dgradient")) {
+        if (!COL(1) || !COL(2)) return 0;
+        o.kind = kind[0] == 'h' || kind[0] == 'H' ? WMTEX_HGRAD : kind[0] == 'v' || kind[0] == 'V' ? WMTEX_VGRAD : WMTEX_DGRAD;
+        put(o.color[0], 64, COL(1)); put(o.color[1], 64, COL(2)); o.n = 2;
+    } else if (!strcasecmp(kind, "mhgradient") || !strcasecmp(kind, "mvgradient") || !strcasecmp(kind, "mdgradient")) {
+        o.kind = kind[1] == 'h' || kind[1] == 'H' ? WMTEX_MHGRAD : kind[1] == 'v' || kind[1] == 'V' ? WMTEX_MVGRAD : WMTEX_MDGRAD;
+        for (size_t i = 1; i < n && o.n < WMTEX_MAXC; i++) if (COL(i)) put(o.color[o.n++], 64, COL(i));
+        if (o.n < 2) return 0;
+    } else if (k >= 6 && !strcasecmp(kind + k - 6, "pixmap")) {                       /* (kind, file, fallback colour) */
+        if (!COL(2)) return 0;
+        o.kind = WMTEX_SOLID; put(o.color[0], 64, COL(2)); o.n = 1;
+    } else if (!strcasecmp(kind, "thgradient") || !strcasecmp(kind, "tvgradient") || !strcasecmp(kind, "tdgradient")) {
+        if (!COL(3) || !COL(4)) return 0;                                              /* (kind, file, opacity, c1, c2) */
+        o.kind = kind[1] == 'h' ? WMTEX_HGRAD : kind[1] == 'v' ? WMTEX_VGRAD : WMTEX_DGRAD;
+        put(o.color[0], 64, COL(3)); put(o.color[1], 64, COL(4)); o.n = 2;
+    } else if (COL(1)) { o.kind = WMTEX_SOLID; put(o.color[0], 64, COL(1)); o.n = 1; }      /* igradient etc.: first colour */
+    else return 0;
+    #undef COL
+    *t = o; return 1;
+}
+
+static void take_texture(const PL *d, const char *key, char *dst, size_t n, WMTexture *tex) {
     const PL *v = pl_get(d, key);
     if (!v) return;
-    if (v->type == 0) { if (v->s[0]) put(dst, n, v->s); return; }
-    if (v->type != 1 || v->n < 2 || v->v[0]->type != 0) return;
-    const char *kind = v->v[0]->s; size_t k = strlen(kind);
-    int pix = k >= 6 && !strcasecmp(kind + k - 6, "pixmap");
-    const PL *c = v->v[pix ? (v->n > 2 ? 2 : 1) : 1];
-    if (pix && v->n < 3) return;                           /* pixmap without a colour: keep the default */
-    if (c->type == 0 && c->s[0]) put(dst, n, c->s);
+    if (v->type == 0) { if (v->s[0]) { put(dst, n, v->s); tex->kind = WMTEX_SOLID; tex->n = 1; put(tex->color[0], 64, v->s); } return; }
+    WMTexture t;
+    if (parse_tex(v, &t)) { *tex = t; put(dst, n, t.color[0]); }
 }
 
 static void apply(WMTheme *t, const PL *d) {
@@ -119,8 +142,8 @@ static void apply(WMTheme *t, const PL *d) {
     take_color(d, "HighlightColor", t->highlight_color, sizeof t->highlight_color);
     take_color(d, "HighlightTextColor", t->highlight_text_color, sizeof t->highlight_text_color);
     take_color(d, "FrameBorderColor", t->frame_border_color, sizeof t->frame_border_color);
-    take_texture(d, "MenuTextBack", t->menu_text_back, sizeof t->menu_text_back);
-    take_texture(d, "MenuTitleBack", t->menu_title_back, sizeof t->menu_title_back);
+    take_texture(d, "MenuTextBack", t->menu_text_back, sizeof t->menu_text_back, &t->menu_text_tex);
+    take_texture(d, "MenuTitleBack", t->menu_title_back, sizeof t->menu_title_back, &t->menu_title_tex);
     take_font(d, "MenuTextFont", t->menu_text_font, sizeof t->menu_text_font);
     take_font(d, "MenuTitleFont", t->menu_title_font, sizeof t->menu_title_font);
 }
@@ -137,6 +160,8 @@ void wmtheme_defaults(WMTheme *t) {                        /* values from Window
     put(t->menu_title_back, sizeof t->menu_title_back, "black");
     put(t->menu_text_font, sizeof t->menu_text_font, "Sans:pixelsize=12");
     put(t->menu_title_font, sizeof t->menu_title_font, "Sans:bold:pixelsize=12");
+    t->menu_text_tex.kind = WMTEX_SOLID; t->menu_text_tex.n = 1; put(t->menu_text_tex.color[0], 64, "rgb:aa/aa/aa");
+    t->menu_title_tex.kind = WMTEX_SOLID; t->menu_title_tex.n = 1; put(t->menu_title_tex.color[0], 64, "black");
 }
 
 int wmtheme_defaults_path(const char *domain, char *out, size_t n) {

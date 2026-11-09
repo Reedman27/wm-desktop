@@ -7,8 +7,8 @@ patch or replace Window Maker, and there is no session manager: start Window Mak
 **Scope right now: Window Maker on X11 only.** Wayland/wlmaker and NEXTSPACE are set aside (the
 Wayland menu backend is in git history, commit 1). Window Maker's own source is the reference.
 
-Plain C99, no autotools. Needs libc and Xlib; `wmnotify` also needs libdbus-1 (skipped by `make` when
-its headers are missing). No systemd, no Flatpak requirement, no GNOME/KDE libraries.
+Plain C99, no autotools. Needs libc and Xlib. `wmnotify` and `wmfiles` also need Xft (as Window Maker does) and `wmnotify` needs libdbus-1; `make` skips what it cannot build.
+libwraster (`wrlib`, shipped with Window Maker) is optional: with it gradients are exact and notification icons load (PNG/XPM); without it gradients degrade to two colours and icons are skipped. No systemd, no Flatpak requirement, no GNOME/KDE libraries.
 
 ## Build
     make                      # builds into ./build
@@ -69,29 +69,39 @@ and flags icons found under a guessed name. No app is left without one.
 
 ### 4. wmsettings — a few Window Maker options in one file
     wmsettings list                         # key, value, allowed values
-    wmsettings set focus sloppy             # focus | placement | icon_size | animations | dock | terminal | icon_theme
+    wmsettings set focus sloppy             # focus | placement | icon_size | animations | dock | terminal | icon_theme | notify_corner | notify_timeout
     wmsettings set icon_theme Papirus       # which icon theme wins (else GTK's theme, then hicolor)
     wmsettings apply [--dry-run]            # writes them into Window Maker via its own `wdwrite`
 `apply` needs Window Maker's `wdwrite` in your PATH; restart Window Maker (or use WPrefs' Reload) to see
-changes. Seven keys only; WPrefs remains the full configuration tool.
+changes. Nine keys only; WPrefs remains the full configuration tool.
 
 ### 5. wmnotify — desktop notifications
     wmnotify &            # needs a D-Bus session bus (dbus-launch or your login session provides one)
     notify-send "Hello" "from wmnotify"
     notify-send -u critical "Disk almost full" "stays until you click it"
 Implements the freedesktop notification service (Notify, CloseNotification, replaces-id, expiry timeouts, the
-urgency hint). Pop-ups stack in the top-right; click to dismiss. `critical` ones never expire. They are drawn
-like a Window Maker menu: a title bar with the summary, the body underneath, bevelled in your theme's colours
-(see "Themes" below). Not shown: icons, action buttons. Text is Latin-1 only. Only one notification daemon can
-own the bus name. Calls with the wrong argument types get a D-Bus `InvalidArgs` error.
+`urgency`, `value`, `image-path` and `desktop-entry` hints, action buttons, `ActionInvoked` and `NotificationClosed`
+signals). Pop-ups stack in a corner; click the body to dismiss (or invoke the `default` action), click a button to
+invoke it. `critical` ones never expire. They are drawn like a Window Maker menu: a title bar with the summary, the
+body underneath, with the app's icon, antialiased UTF-8 text (markup tags are stripped, not rendered) and a progress
+bar for `value`; critical ones use the highlight colours. Icons come from the hint, else the app's registry icon.
+Settings (`wmsettings set`): `notify_corner` (top-right, top-left, bottom-right, bottom-left) and `notify_timeout`
+(ms, default 5000). At most 8 are shown; the oldest is closed. Only one notification daemon can own the bus name.
+Wrongly typed calls get a D-Bus `InvalidArgs` error.
+
+`wmnotify-send` is a small notify-send replacement for scripts: `-a app -i icon -u low|normal|critical -t ms
+-r id -p -v 0..100 -A key=label -e -w` (see its `--help`); `-w` waits for the close or action signal.
 
 ### 6. wmfiles — column file browser
     wmfiles [directory]
 Ships `data/applications/wmfiles.desktop` and an icon (SVG + 48/64/128 px PNG), installed by `make install`, so it
 appears in the generated menu and Dock like any other app. Click a folder to open its next column; double-click a file to open it with `xdg-open` (or `$WMFILES_OPENER`).
-Keys: Up/Down select, Right enter, Left back, `h` hidden files, `q` quit; wheel scrolls. Browsing only: no
-copy, move, delete or rename yet. Wears your Window Maker theme (below): path bar = menu title bar, columns =
-menu body, selected row = highlight colour.
+Keys: Up/Down select, Right enter, Left back, `h` hidden files, `q` quit; wheel scrolls.
+File operations (never overwrite, never follow symlinks; copies keep symlinks as links): `Delete` moves to the XDG
+trash (with a `.trashinfo`, so file managers can restore it), `n` new folder, `F2` rename, `Ctrl+C` / `Ctrl+X` /
+`Ctrl+V` copy / cut / paste into the active column's folder. Names are typed in a bar at the bottom (Return
+accepts, Escape cancels); errors appear in the same bar. Wears your Window Maker theme (below): path bar = menu
+title bar, columns = menu body, selected row = highlight colour.
 
 ### Themes — how wmnotify and wmfiles follow Window Maker
 Applying a Window Maker theme merges its keys into the `WindowMaker` defaults file, so that file *is* the active
@@ -103,15 +113,15 @@ look. `wmnotify` and `wmfiles` read it (`$WMAKER_USER_ROOT/Defaults/WindowMaker`
 |---|---|
 | `MenuTitleBack`, `MenuTitleColor`, `MenuTitleFont` | notification summary bar, wmfiles path bar |
 | `MenuTextBack`, `MenuTextColor`, `MenuTextFont` | notification body, wmfiles columns |
-| `HighlightColor`, `HighlightTextColor` | wmfiles selection |
+| `HighlightColor`, `HighlightTextColor` | wmfiles selection, notification buttons and critical pop-ups |
 | `MenuDisabledColor`, `FrameBorderColor` | disabled text, window outline |
 
-Switch themes (setstyle, WPrefs, or editing the file) and the next notification, or the next wmfiles redraw, uses
-the new look; already-visible notifications keep the old one. Limits, stated plainly: a texture (gradient,
-pixmap) is reduced to its first colour; fonts are loaded as classic X core fonts (no Xft/antialiasing), so a
-fontconfig name such as `Sans:bold:pixelsize=12` is mapped to a matching core font and falls back to `fixed`
-if the X server has none; bevels are derived from the face colour rather than copied from Window Maker's own
-renderer, so it looks like a Window Maker menu, not pixel-identical to one.
+Switch themes (setstyle, WPrefs, or editing the file) and visible notifications and wmfiles restyle within a
+second. Textures: `solid`, `hgradient`/`vgradient`/`dgradient` and the multi-colour `mh`/`mv`/`md` variants are
+rendered exactly (needs libwraster; otherwise a two-colour approximation). Pixmap textures and `igradient` fall
+back to their colour. Fonts are Xft, so fontconfig names such as `Sans:bold:pixelsize=12` are used as written.
+Bevels are derived from the face colours rather than copied from Window Maker's own renderer, so it looks like a
+Window Maker menu, not pixel-identical to one.
 
 ### 7. wmgfx — tear-free X11 setup
     wmgfx detect                 # GPU drivers found in /sys/class/drm and the chosen primary
@@ -159,9 +169,9 @@ Everything else consumes this; nothing else scans application directories.
 - Icons: scaled (`@2x`) directories are ignored; the generated tile supports Latin letters and digits only (anything else shows `#`); SVG rendering needs one of the converters above, otherwise such apps get the generated tile.
 
 ## Verification status (honest)
-- `make check` passes, also under `make sanitize` (ASan + UBSan): 93 WMApps, 35 WMIcons and 58 WMTheme unit checks, shell suites (including `wmdock apply-icons` on a scratch `WMAKER_USER_ROOT`), dock window matching against a fake EWMH window manager, and GUI tests.
-- **GUI tests** (`tests/run_gui.sh`) run `wmnotify` and `wmfiles` under Xvfb with a private D-Bus session bus (no window manager), send real notifications through `gdbus`, and read pixels back with `tests/xprobe.c` to prove the title bar, body, selection and text are drawn in the colours of a fixture theme file and that changing the file changes the next draw. They also cover replace-id, close, expiry, critical urgency, click-to-dismiss, the single-instance guard and `wmfiles` double-click opening. They SKIP when Xvfb, dbus-daemon, gdbus or a built `wmnotify` is missing.
+- `make check` passes, also under `make sanitize` (ASan + UBSan): 93 WMApps, 35 WMIcons, 83 WMTheme and 40 file-operation unit checks, shell suites (including `wmdock apply-icons` on a scratch `WMAKER_USER_ROOT`), dock window matching against a fake EWMH window manager, and GUI tests.
+- **GUI tests** (`tests/run_gui.sh`) run `wmnotify` and `wmfiles` under Xvfb with a private D-Bus session bus (no window manager), send real notifications through `gdbus`, and read pixels back with `tests/xprobe.c` to prove the title bar, body, selection and text are drawn in the colours of a fixture theme file and that changing the file changes the next draw. They also cover gradient rendering, live restyling, replace-id, close, expiry, critical urgency, click-to-dismiss, the single-instance guard, `wmfiles` double-click opening and its trash/new folder/rename/copy/cut/paste keys. They SKIP when Xvfb, dbus-daemon, gdbus or a built `wmnotify` is missing.
 - A screenshot of a themed notification and `wmfiles` was looked at (Window Maker's default grey-blue menu colours).
 - Generated tiles and the `wmfiles` icon were rendered with ImageMagick/rsvg and looked at; I have **not** seen anything inside a running Window Maker (its XPM/PNG loaders and menu/defaults formats were checked by reading its source).
-- **Not tested:** every tool against a *running* Window Maker, `wmgfx` on real hardware (only fake `/sys` data), `wmsettings apply` (needs `wdwrite`), real application notification clients other than `gdbus`, and non-Latin text or Xft fonts (not implemented).
+- **Not tested:** every tool against a *running* Window Maker, `wmgfx` on real hardware (only fake `/sys` data), `wmsettings apply` (needs `wdwrite`), real application notification clients other than `gdbus`, action buttons and icons by real clicking (only rendering was checked by eye, not exercised by an app), non-Latin glyphs on a machine with CJK fonts, and input methods (XIM) in wmfiles.
 - No license file yet: choose one before publishing. Reference projects have their own terms (Window Maker is GPL-2.0-or-later).
