@@ -1,345 +1,456 @@
 #define _POSIX_C_SOURCE 200809L
 #include "wmicons.h"
+#include "../configuration/wmconfig.h"
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
-/* ------------------------------------------------------------ theme search */
+#define SVG_PENALTY 24      /* a raster within +-24 px beats rendering an SVG */
+#define MAX_THEMES 512      /* (base dir, theme) pairs, including ones that do not exist */
 
-static char extra_dir[4096];
-void wmicons_set_dir(const char *dir) { snprintf(extra_dir, sizeof extra_dir, "%s", dir ? dir : ""); }
+/* ------------------------------------------------------------------ helpers */
 
-typedef struct {
-    char raster[4096]; int rsize; int have_raster;
-    char svg[4096];    int have_svg;
-} Found;
+static int is_file(const char *p) { struct stat st; return !stat(p, &st) && S_ISREG(st.st_mode); }
+static int is_dir(const char *p) { struct stat st; return !stat(p, &st) && S_ISDIR(st.st_mode); }
 
-static int exists(const char *p) { struct stat st; return !stat(p, &st) && S_ISREG(st.st_mode); }
-static int has_ext(const char *s, const char *ext) { size_t n = strlen(s), e = strlen(ext); return n > e && !strcasecmp(s + n - e, ext); }
-static int all_digits(const char *s) { if (!*s || strlen(s) > 4) return 0; for (; *s; s++) if (!isdigit((unsigned char)*s)) return 0; return 1; }
+static int has_suffix(const char *s, const char *suf) {
+    size_t n = strlen(s), m = strlen(suf);
+    return n > m && !strcasecmp(s + n - m, suf);
+}
 
-/* lower is better; sizes at/above the wanted one beat smaller ones (downscale > upscale) */
-static long score(int have, int want) { return have >= want ? have - want : (long)(want - have) * 4 + 1000; }
-/* a raster that is at least 3/4 of the wanted size is good enough not to look further */
-static int good(const Found *f, int want) { return f->have_raster && f->rsize * 4 >= want * 3; }
+static uint32_t fnv(const char *s, uint32_t h) {
+    for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
+    return h;
+}
 
-static void consider(Found *f, const char *dir, const char *name, int size, int want) {
+static int in_path(const char *prog, char *full, size_t n) {
+    const char *p = getenv("PATH"); if (!p) return 0;
+    char *d = strdup(p), *save = d; int ok = 0;
+    if (!d) return 0;
+    for (char *s = d, *e; !ok; s = e + 1) {
+        e = strchr(s, ':'); if (e) *e = 0;
+        snprintf(full, n, "%s/%s", *s ? s : ".", prog);
+        if (access(full, X_OK) == 0 && is_file(full)) ok = 1;
+        if (!e) break;
+    }
+    free(save); return ok;
+}
+
+static char *trim(char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    size_t n = strlen(s);
+    while (n && (s[n-1] == '\n' || s[n-1] == '\r' || s[n-1] == ' ' || s[n-1] == '\t')) s[--n] = 0;
+    return s;
+}
+
+/* ------------------------------------------------------------ theme parsing */
+
+typedef struct { char path[256]; int size, min, max, thr, type; } IDir;   /* type 0 fixed, 1 scalable, 2 threshold */
+typedef struct { char key[1024]; int exists, has_index, n, cap; IDir *dirs; char inherits[1024]; } Theme;
+static Theme theme_cache[MAX_THEMES];
+static int ntheme_cache;
+
+static int word_in(const char *list, const char *w) {      /* comma separated */
+    size_t n = strlen(w);
+    for (const char *p = list; *p;) {
+        const char *e = strchr(p, ','); size_t l = e ? (size_t)(e - p) : strlen(p);
+        while (l && (*p == ' ')) { p++; l--; }
+        while (l && p[l-1] == ' ') l--;
+        if (l == n && !strncmp(p, w, n)) return 1;
+        if (!e) break;
+        p = e + 1;
+    }
+    return 0;
+}
+
+static Theme *theme_load(const char *tdir) {
+    for (int i = 0; i < ntheme_cache; i++) if (!strcmp(theme_cache[i].key, tdir)) return &theme_cache[i];
+    if (ntheme_cache == MAX_THEMES) return NULL;
+    Theme *t = &theme_cache[ntheme_cache++];
+    memset(t, 0, sizeof *t); snprintf(t->key, sizeof t->key, "%s", tdir);
+    t->exists = is_dir(tdir);
+    if (!t->exists) return t;
+    char ip[4200]; snprintf(ip, sizeof ip, "%s/index.theme", tdir);
+    FILE *f = fopen(ip, "r"); if (!f) return t;
+    t->has_index = 1;
+    char dirlist[16384] = ""; char *line = NULL; size_t cap = 0;
+    char group[256] = ""; IDir cur; int cur_ok = 0, cur_apps = 0, cur_scale = 1; char ctx[64] = "";
+    cur.size = cur.min = cur.max = cur.thr = cur.type = 0; cur.path[0] = 0;
+    #define FLUSH() do { if (cur_ok && cur_apps && cur_scale == 1 && !strstr(cur.path, "symbolic")) { \
+        if (t->n == t->cap) { t->cap = t->cap ? t->cap * 2 : 64; t->dirs = realloc(t->dirs, (size_t)t->cap * sizeof *t->dirs); if (!t->dirs) abort(); } \
+        t->dirs[t->n++] = cur; } } while (0)
+    while (getline(&line, &cap, f) >= 0) {
+        char *s = trim(line);
+        if (*s == '[') {
+            FLUSH();
+            char *e = strchr(s, ']'); if (e) *e = 0;
+            snprintf(group, sizeof group, "%s", s + 1);
+            memset(&cur, 0, sizeof cur); cur_ok = 0; cur_apps = 0; cur_scale = 1; ctx[0] = 0;
+            if (strcmp(group, "Icon Theme") && dirlist[0] && word_in(dirlist, group)) {
+                snprintf(cur.path, sizeof cur.path, "%s", group); cur.min = -1; cur.max = -1;
+                cur_apps = strstr(group, "apps") != NULL;   /* refined by Context= below */
+            }
+            continue;
+        }
+        char *eq = strchr(s, '='); if (!eq || *s == '#') continue;
+        *eq = 0; char *k = trim(s), *v = trim(eq + 1);
+        if (!strcmp(group, "Icon Theme")) {
+            if (!strcmp(k, "Inherits")) snprintf(t->inherits, sizeof t->inherits, "%s", v);
+            else if (!strcmp(k, "Directories")) snprintf(dirlist, sizeof dirlist, "%s", v);
+        } else if (cur.path[0]) {
+            if (!strcmp(k, "Size")) { cur.size = atoi(v); cur_ok = 1; if (cur.min < 0) cur.min = cur.max = cur.size; }
+            else if (!strcmp(k, "MinSize")) cur.min = atoi(v);
+            else if (!strcmp(k, "MaxSize")) cur.max = atoi(v);
+            else if (!strcmp(k, "Threshold")) cur.thr = atoi(v);
+            else if (!strcmp(k, "Scale")) cur_scale = atoi(v);
+            else if (!strcmp(k, "Type")) cur.type = !strcasecmp(v, "Scalable") ? 1 : !strcasecmp(v, "Fixed") ? 0 : 2;
+            else if (!strcmp(k, "Context")) { snprintf(ctx, sizeof ctx, "%s", v); cur_apps = !strcasecmp(v, "Applications"); }
+        }
+    }
+    FLUSH();
+    #undef FLUSH
+    for (int i = 0; i < t->n; i++) {             /* defaults per spec */
+        IDir *d = &t->dirs[i];
+        if (d->min < 0) d->min = d->size;
+        if (d->max < 0) d->max = d->size;
+        if (d->type == 2 && !d->thr) d->thr = 2;
+    }
+    free(line); fclose(f);
+    return t;
+}
+
+/* Upscaling blurs, downscaling does not: a directory whose largest size is below 'want' is
+ * penalized so that a bigger icon wins over a smaller one even if the smaller is numerically closer. */
+static int too_small(int dist, int largest, int want) { return largest < want ? dist * 4 + 1000 : dist; }
+
+static int dir_distance(const IDir *d, int want) {
+    if (d->type == 0) return too_small(abs(d->size - want), d->size, want);
+    if (d->type == 1) return too_small(want < d->min ? d->min - want : want > d->max ? want - d->max : 0, d->max, want);
+    if (want < d->size - d->thr) return (d->size - d->thr) - want;
+    if (want > d->size + d->thr) return too_small(want - (d->size + d->thr), d->size + d->thr, want);
+    return 0;
+}
+
+typedef struct { char path[4096]; long score; int kind; int found; } Best;   /* kind 1 raster, 2 svg */
+
+static void consider(Best *b, const char *dir, const char *name, int dist, int have_conv) {
     static const char *const ext[] = { "png", "xpm", "svg", NULL };
     for (int i = 0; ext[i]; i++) {
         char p[4096]; snprintf(p, sizeof p, "%s/%s.%s", dir, name, ext[i]);
-        if (!exists(p)) continue;
-        if (i == 2) {
-            if (!f->have_svg) { snprintf(f->svg, sizeof f->svg, "%s", p); f->have_svg = 1; }
-        } else if (!f->have_raster || score(size, want) < score(f->rsize, want)) {
-            snprintf(f->raster, sizeof f->raster, "%s", p); f->rsize = size; f->have_raster = 1;
-        }
+        if (!is_file(p)) continue;
+        int kind = i == 2 ? 2 : 1;
+        long sc = kind == 1 ? dist : (have_conv ? SVG_PENALTY : 100000 + dist);
+        if (!b->found || sc < b->score) { snprintf(b->path, sizeof b->path, "%s", p); b->score = sc; b->kind = kind; b->found = 1; }
     }
 }
 
-static void search_theme(Found *f, const char *themedir, const char *name, int want) {
-    DIR *d = opendir(themedir); if (!d) return;
+static int have_converter(void);
+
+static void theme_lookup(Best *b, const char *tdir, const char *name, int want) {
+    Theme *t = theme_load(tdir); if (!t || !t->exists) return;
+    int conv = have_converter();
+    char dir[8600];
+    if (t->has_index) {
+        for (int i = 0; i < t->n; i++) {
+            snprintf(dir, sizeof dir, "%s/%s", tdir, t->dirs[i].path);
+            consider(b, dir, name, dir_distance(&t->dirs[i], want), conv);
+        }
+        return;
+    }
+    DIR *d = opendir(tdir); if (!d) return;       /* no index.theme: infer from NxN / scalable directory names */
     struct dirent *e;
     while ((e = readdir(d))) {
-        if (e->d_name[0] == '.' || strchr(e->d_name, '@')) continue;      /* "48x48@2" holds 96px icons: skip */
-        int w = 0, h = 0; char sub[8192];
-        if (sscanf(e->d_name, "%dx%d", &w, &h) == 2 && w > 0) {
-            snprintf(sub, sizeof sub, "%s/%s/apps", themedir, e->d_name); consider(f, sub, name, w, want);
-        } else if (all_digits(e->d_name)) {                              /* theme/48/apps */
-            snprintf(sub, sizeof sub, "%s/%s/apps", themedir, e->d_name); consider(f, sub, name, atoi(e->d_name), want);
+        int w = 0, h = 0;
+        if (sscanf(e->d_name, "%dx%d", &w, &h) == 2 && w > 0 && !strchr(e->d_name, '@')) {
+            snprintf(dir, sizeof dir, "%s/%s/apps", tdir, e->d_name); consider(b, dir, name, too_small(abs(w - want), w, want), conv);
         } else if (!strcmp(e->d_name, "scalable")) {
-            snprintf(sub, sizeof sub, "%s/scalable/apps", themedir); consider(f, sub, name, want, want);
-        } else if (!strcmp(e->d_name, "apps")) {                         /* old layout: theme/apps/<size> */
-            snprintf(sub, sizeof sub, "%s/apps", themedir);
-            DIR *a = opendir(sub); struct dirent *x;
-            while (a && (x = readdir(a))) {
-                char s2[8704]; snprintf(s2, sizeof s2, "%s/%s", sub, x->d_name);
-                if (all_digits(x->d_name)) consider(f, s2, name, atoi(x->d_name), want);
-                else if (!strcmp(x->d_name, "scalable")) consider(f, s2, name, want, want);
-            }
-            if (a) closedir(a);
+            snprintf(dir, sizeof dir, "%s/scalable/apps", tdir); consider(b, dir, name, 0, conv);
         }
     }
     closedir(d);
 }
 
-/* One icon name or absolute path -> best raster and first svg in the installed themes. */
-static int find_icon(const char *icon, int want, Found *f) {
-    memset(f, 0, sizeof *f);
-    if (!icon || !*icon) return 0;
-    if (icon[0] == '/') {
-        if (!exists(icon)) return 0;
-        if (has_ext(icon, ".svg")) { snprintf(f->svg, sizeof f->svg, "%s", icon); f->have_svg = 1; }
-        else { snprintf(f->raster, sizeof f->raster, "%s", icon); f->rsize = want; f->have_raster = 1; }
-        return 1;
-    }
-    char name[512]; snprintf(name, sizeof name, "%s", icon);          /* some entries write Icon=foo.png */
-    if (has_ext(name, ".png") || has_ext(name, ".xpm") || has_ext(name, ".svg")) name[strlen(name) - 4] = 0;
-    const char *home = getenv("HOME"); char base[4096], td[8192];
-    char **dirs; size_t nd = wmapps_dirs(&dirs, extra_dir[0] ? extra_dir : NULL);   /* same data dirs as the app scan */
-    for (size_t i = 0; i < nd + 1 && !good(f, want); i++) {
-        if (i == nd) snprintf(base, sizeof base, "%s/.icons", home ? home : "");
-        else snprintf(base, sizeof base, "%s/icons", dirs[i]);
-        snprintf(td, sizeof td, "%s/hicolor", base); search_theme(f, td, name, want);
-        DIR *d = opendir(base); struct dirent *e;                     /* then any other installed theme */
-        while (d && (e = readdir(d))) {
-            if (e->d_name[0] == '.' || !strcmp(e->d_name, "hicolor")) continue;
-            snprintf(td, sizeof td, "%s/%s", base, e->d_name); search_theme(f, td, name, want);
+/* ---------------------------------------------------------- theme ordering */
+
+typedef struct { char **v; int n; } Names;
+static int names_has(const Names *s, const char *x) { for (int i = 0; i < s->n; i++) if (!strcmp(s->v[i], x)) return 1; return 0; }
+static void names_add(Names *s, const char *x) {
+    s->v = realloc(s->v, ((size_t)s->n + 1) * sizeof *s->v); if (!s->v) abort();
+    s->v[s->n] = strdup(x); if (!s->v[s->n]) abort(); s->n++;
+}
+static void names_free(Names *s) { for (int i = 0; i < s->n; i++) free(s->v[i]); free(s->v); memset(s, 0, sizeof *s); }
+
+typedef struct { char **v; size_t n; } Bases;      /* icon base dirs in spec order */
+
+static void chain_add(Names *c, const Bases *bs, const char *theme, int depth) {
+    if (!*theme || names_has(c, theme) || depth > 8) return;
+    names_add(c, theme);
+    for (size_t i = 0; i < bs->n; i++) {
+        char td[8192]; snprintf(td, sizeof td, "%s/%s", bs->v[i], theme);
+        Theme *t = theme_load(td);
+        if (t && t->has_index && t->inherits[0]) {
+            char inh[1024]; snprintf(inh, sizeof inh, "%s", t->inherits);
+            for (char *s = inh, *e; ; s = e + 1) {
+                e = strchr(s, ','); if (e) *e = 0;
+                chain_add(c, bs, trim(s), depth + 1);
+                if (!e) break;
+            }
+            break;
         }
-        if (d) closedir(d);
     }
+}
+
+static int gtk_theme(char *out, size_t n) {
+    const char *xc = getenv("XDG_CONFIG_HOME"), *h = getenv("HOME");
+    const char *files[2]; char f1[4096], f2[4096];
+    if (xc && *xc) snprintf(f1, sizeof f1, "%s/gtk-3.0/settings.ini", xc); else snprintf(f1, sizeof f1, "%s/.config/gtk-3.0/settings.ini", h ? h : "");
+    snprintf(f2, sizeof f2, "%s/.gtkrc-2.0", h ? h : "");
+    files[0] = f1; files[1] = f2;
+    for (int i = 0; i < 2; i++) {
+        FILE *f = fopen(files[i], "r"); if (!f) continue;
+        char *line = NULL; size_t cap = 0; int ok = 0;
+        while (!ok && getline(&line, &cap, f) >= 0) {
+            char *s = trim(line);
+            if (strncmp(s, "gtk-icon-theme-name", 19)) continue;
+            char *eq = strchr(s, '='); if (!eq) continue;
+            char *v = trim(eq + 1);
+            if (*v == '"') { v++; char *q = strchr(v, '"'); if (q) *q = 0; }
+            if (*v) { snprintf(out, n, "%s", v); ok = 1; }
+        }
+        free(line); fclose(f);
+        if (ok) return 1;
+    }
+    return 0;
+}
+
+static char extra_dir[4096];
+void wmicons_set_extra_dir(const char *dir) { snprintf(extra_dir, sizeof extra_dir, "%s", dir ? dir : ""); }
+
+static void bases_build(Bases *bs) {
+    const char *home = getenv("HOME"); char b[4096];
+    char **dirs; size_t nd = wmapps_dirs(&dirs, extra_dir[0] ? extra_dir : NULL);
+    bs->v = calloc(nd + 2, sizeof *bs->v); bs->n = 0; if (!bs->v) abort();
+    snprintf(b, sizeof b, "%s/.icons", home ? home : ""); bs->v[bs->n++] = strdup(b);
+    for (size_t i = 0; i < nd; i++) { snprintf(b, sizeof b, "%s/icons", dirs[i]); bs->v[bs->n++] = strdup(b); }
     wmapps_dirs_free(dirs, nd);
-    if (!good(f, want)) {                                             /* legacy pixmaps */
-        consider(f, "/usr/share/pixmaps", name, want, want);
-        consider(f, "/usr/local/share/pixmaps", name, want, want);
-    }
-    return f->have_raster || f->have_svg;
+}
+static void bases_free(Bases *bs) { for (size_t i = 0; i < bs->n; i++) free(bs->v[i]); free(bs->v); }
+
+static void strip_ext(char *name) {
+    size_t n = strlen(name);
+    if (n > 4 && (has_suffix(name, ".png") || has_suffix(name, ".xpm") || has_suffix(name, ".svg"))) name[n - 4] = 0;
 }
 
 int wmicons_resolve(const char *icon, int size, char *out, size_t outlen) {
-    Found f; if (!find_icon(icon, size, &f)) return 0;
-    if (f.have_raster) { snprintf(out, outlen, "%s", f.raster); return 1; }
-    snprintf(out, outlen, "%s", f.svg); return 2;
+    if (!icon || !*icon) return 0;
+    if (icon[0] == '/') {
+        if (!is_file(icon)) return 0;
+        snprintf(out, outlen, "%s", icon); return has_suffix(icon, ".svg") ? 2 : 1;
+    }
+    char name[512]; snprintf(name, sizeof name, "%s", icon); strip_ext(name);   /* some entries write Icon=foo.png */
+
+    Bases bs; bases_build(&bs);
+    Names chain = {0}; char tn[256];
+    const char *env = getenv("WMICONS_THEME");
+    if (env && *env) chain_add(&chain, &bs, env, 0);
+    const char *cfg = wmconfig_get("icon_theme", "");
+    if (cfg && *cfg) chain_add(&chain, &bs, cfg, 0);
+    if (gtk_theme(tn, sizeof tn)) chain_add(&chain, &bs, tn, 0);
+    chain_add(&chain, &bs, "hicolor", 0);                    /* the spec's mandatory fallback */
+    for (size_t i = 0; i < bs.n; i++) {                      /* then whatever else is installed */
+        DIR *d = opendir(bs.v[i]); struct dirent *e;
+        while (d && (e = readdir(d))) if (e->d_name[0] != '.') chain_add(&chain, &bs, e->d_name, 0);
+        if (d) closedir(d);
+    }
+
+    Best b; memset(&b, 0, sizeof b);
+    for (int t = 0; t < chain.n && !b.found; t++)
+        for (size_t i = 0; i < bs.n && !b.found; i++) {
+            char td[8192]; snprintf(td, sizeof td, "%s/%s", bs.v[i], chain.v[t]);
+            theme_lookup(&b, td, name, size);
+        }
+    names_free(&chain); bases_free(&bs);
+    if (!b.found) {                                          /* legacy pixmaps */
+        static const char *const pix[] = { "/usr/share/pixmaps", "/usr/local/share/pixmaps", NULL };
+        for (int i = 0; pix[i]; i++) consider(&b, pix[i], name, 0, have_converter());
+    }
+    if (!b.found) return 0;
+    snprintf(out, outlen, "%s", b.path); return b.kind;
 }
 
-/* ------------------------------------------------------------------- cache */
+/* ------------------------------------------------------------ SVG -> PNG */
 
-static int mkdirs(const char *path) {
-    char tmp[4096]; snprintf(tmp, sizeof tmp, "%s", path);
-    for (char *p = tmp + 1; *p; p++) if (*p == '/') { *p = 0; mkdir(tmp, 0755); *p = '/'; }
-    mkdir(tmp, 0755);
-    struct stat st; return !stat(tmp, &st) && S_ISDIR(st.st_mode) && !access(tmp, W_OK);
-}
+static const char *const converters[] = { "rsvg-convert", "magick", "convert", "inkscape", NULL };
+static int have_converter(void) { char full[4096]; for (int i = 0; converters[i]; i++) if (in_path(converters[i], full, sizeof full)) return 1; return 0; }
 
 static int cache_dir(char *out, size_t n) {
-    const char *x = getenv("XDG_CACHE_HOME"), *h = getenv("HOME"); struct stat st;
+    const char *x = getenv("XDG_CACHE_HOME"), *h = getenv("HOME");
     if (x && *x) snprintf(out, n, "%s/wm-desktop/icons", x);
-    else if (h && *h && !stat(h, &st) && S_ISDIR(st.st_mode)) snprintf(out, n, "%s/.cache/wm-desktop/icons", h);
-    else return 0;                                                    /* never invent a missing $HOME */
-    return mkdirs(out);
+    else if (h && *h) snprintf(out, n, "%s/.cache/wm-desktop/icons", h);
+    else return 0;
+    char p[4096]; snprintf(p, sizeof p, "%s", out);
+    for (char *s = p + 1; *s; s++) if (*s == '/') { *s = 0; mkdir(p, 0755); *s = '/'; }
+    return mkdir(p, 0755) == 0 || errno == EEXIST;
 }
 
-static unsigned long hash(const char *s) { unsigned long h = 5381; for (; *s; s++) h = h * 33 + (unsigned char)*s; return h & 0xffffffffUL; }
-static void safe_name(const char *s, char *out, size_t n) {
-    size_t j = 0;
-    for (; *s && j + 1 < n; s++) out[j++] = (isalnum((unsigned char)*s) || *s == '.' || *s == '-' || *s == '_') ? *s : '_';
-    out[j] = 0;
-}
-static int is_png(const char *p) {
-    FILE *f = fopen(p, "rb"); if (!f) return 0;
-    unsigned char m[8]; size_t k = fread(m, 1, 8, f); fclose(f);
-    return k == 8 && !memcmp(m, "\x89PNG\r\n\x1a\n", 8);
+static void safe_name(const char *in, char *out, size_t n) {
+    size_t k = 0;
+    for (const char *p = strrchr(in, '/') ? strrchr(in, '/') + 1 : in; *p && k + 1 < n && k < 60; p++)
+        out[k++] = (isalnum((unsigned char)*p) || *p == '.' || *p == '-' || *p == '_') ? *p : '_';
+    out[k] = 0;
 }
 
-/* ------------------------------------------------------ svg -> png (no shell) */
-
-static int run(const char *const argv[]) {
-    pid_t pid = fork(); if (pid < 0) return 0;
-    if (pid == 0) {
-        int nul = open("/dev/null", O_RDWR);
-        if (nul >= 0) { dup2(nul, 0); dup2(nul, 1); dup2(nul, 2); }
-        execvp(argv[0], (char *const *)argv); _exit(127);
+static int run_quiet(char *const *argv, int timeout_s) {
+    pid_t p = fork(); if (p < 0) return -1;
+    if (p == 0) {
+        int dn = open("/dev/null", O_RDWR); if (dn >= 0) { dup2(dn, 0); dup2(dn, 1); dup2(dn, 2); }
+        execvp(argv[0], argv); _exit(127);
     }
-    int st; while (waitpid(pid, &st, 0) < 0) if (errno != EINTR) return 0;
-    return WIFEXITED(st) && WEXITSTATUS(st) == 0;
-}
-
-static int in_path(const char *prog) {
-    const char *path = getenv("PATH"); if (!path) path = "/usr/local/bin:/usr/bin:/bin";
-    char *copy = strdup(path), *save = NULL; int ok = 0; if (!copy) return 0;
-    for (char *d = strtok_r(copy, ":", &save); d && !ok; d = strtok_r(NULL, ":", &save)) {
-        char p[4096]; snprintf(p, sizeof p, "%s/%s", *d ? d : ".", prog); ok = !access(p, X_OK);
+    for (int i = 0; i < timeout_s * 50; i++) {
+        int st; pid_t r = waitpid(p, &st, WNOHANG);
+        if (r == p) return WIFEXITED(st) && WEXITSTATUS(st) == 0 ? 0 : -1;
+        if (r < 0) return -1;
+        struct timespec ts = { 0, 20000000 }; nanosleep(&ts, NULL);
     }
-    free(copy); return ok;
+    kill(p, SIGKILL); waitpid(p, NULL, 0); return -1;
 }
 
-/* Renders 'svg' to a cached PNG of about size x size. Returns 1 and the path in 'out' on success. */
-static int convert_svg(const char *svg, int size, char *out, size_t outlen) {
-    char cd[4096]; if (!cache_dir(cd, sizeof cd)) return 0;
-    char base[200], dest[4608], tmp[4700]; const char *b = strrchr(svg, '/'); b = b ? b + 1 : svg;
-    safe_name(b, base, sizeof base);
-    snprintf(dest, sizeof dest, "%s/%s-%08lx-%d.png", cd, base, hash(svg), size);
-    struct stat a, c;
-    if (!stat(dest, &c) && !stat(svg, &a) && c.st_mtime >= a.st_mtime && is_png(dest)) { snprintf(out, outlen, "%s", dest); return 1; }
+int wmicons_convert_svg(const char *svg, int size, char *out, size_t outlen) {
+    struct stat st; char dir[4096];
+    if (stat(svg, &st) || !cache_dir(dir, sizeof dir)) return 0;
+    char sz[16], nm[80], key[4400]; snprintf(sz, sizeof sz, "%d", size);
+    safe_name(svg, nm, sizeof nm); { char *dot = strrchr(nm, '.'); if (dot && !strcasecmp(dot, ".svg")) *dot = 0; }
+    snprintf(key, sizeof key, "%s|%ld|%lld", svg, (long)st.st_mtime, (long long)st.st_size);
+    char final[8300]; snprintf(final, sizeof final, "%s/%s-%d-%08x.png", dir, nm, size, (unsigned)fnv(key, 2166136261u));
+    if (is_file(final)) { snprintf(out, outlen, "%s", final); return 1; }           /* cached, SVG unchanged */
 
-    char sz[16], geo[32], expf[4800];
-    snprintf(sz, sizeof sz, "%d", size); snprintf(geo, sizeof geo, "%dx%d", size, size);
-    snprintf(tmp, sizeof tmp, "%s.%d.tmp.png", dest, (int)getpid());
-    snprintf(expf, sizeof expf, "--export-filename=%s", tmp);
-    const char *rsvg[]  = { "rsvg-convert", "-a", "-w", sz, "-h", sz, "-o", tmp, svg, NULL };
-    const char *magick[] = { "magick", "-background", "none", "-density", "384", svg, "-resize", geo, tmp, NULL };
-    const char *convert[] = { "convert", "-background", "none", "-density", "384", svg, "-resize", geo, tmp, NULL };
-    const char *inkscape[] = { "inkscape", "--export-type=png", expf, "-w", sz, "-h", sz, svg, NULL };
-    const char *const *cmds[] = { rsvg, magick, convert, inkscape, NULL };
-    for (int i = 0; cmds[i]; i++) {
-        if (!in_path(cmds[i][0])) continue;
-        if (run(cmds[i]) && is_png(tmp) && !rename(tmp, dest)) { snprintf(out, outlen, "%s", dest); return 1; }
+    char tmp[8400], px[32], full[4096]; snprintf(tmp, sizeof tmp, "%s.%d.tmp.png", final, (int)getpid());
+    char s2[32]; snprintf(s2, sizeof s2, "%dx%d", size, size); snprintf(px, sizeof px, "%d", size);
+    for (int i = 0; converters[i]; i++) {
+        if (!in_path(converters[i], full, sizeof full)) continue;
+        char *argv_rsvg[]  = { "rsvg-convert", "-a", "-w", px, "-h", px, "-o", tmp, (char *)svg, NULL };
+        char *argv_magick[] = { (char *)converters[i], "-background", "none", "-density", "384", (char *)svg, "-resize", s2, tmp, NULL };
+        char *argv_ink[]   = { "inkscape", "--export-type=png", "-w", px, "-h", px, "-o", tmp, (char *)svg, NULL };
+        char **argv = i == 0 ? argv_rsvg : i == 3 ? argv_ink : argv_magick;
+        if (run_quiet(argv, 20) == 0 && is_file(tmp) && !stat(tmp, &st) && st.st_size > 0 && !rename(tmp, final)) {
+            snprintf(out, outlen, "%s", final); return 1;
+        }
         unlink(tmp);
     }
     return 0;
 }
 
-/* Best usable file from one lookup: a good-sized raster, else a converted svg, else a small raster. */
-static WMIconSource pick(const Found *f, int size, WMIconSource raster_src, WMIconSource conv_src, char *out, size_t outlen) {
-    if (f->have_raster && (!f->have_svg || f->rsize * 4 >= size * 3)) { snprintf(out, outlen, "%s", f->raster); return raster_src; }
-    if (f->have_svg && convert_svg(f->svg, size, out, outlen)) return conv_src;
-    if (f->have_raster) { snprintf(out, outlen, "%s", f->raster); return raster_src; }
-    return WMICON_NONE;
-}
+/* ------------------------------------------------------- generated tile */
 
-/* ------------------------------------------------------- category fallbacks */
-
-typedef struct { const char *cat; const char *names[4]; unsigned rgb; } CatInfo;
-static const CatInfo cats[] = {
-    { "Accessories", { "applications-utilities", "accessories-text-editor", NULL }, 0x7A8CA5 },
-    { "Development", { "applications-development", "applications-engineering", NULL }, 0x4F7F6A },
-    { "Education",   { "applications-education", "applications-science", NULL }, 0xB8863B },
-    { "Games",       { "applications-games", NULL }, 0xA8483E },
-    { "Graphics",    { "applications-graphics", NULL }, 0x9055A2 },
-    { "Internet",    { "applications-internet", "internet-web-browser", NULL }, 0x3F78B5 },
-    { "Multimedia",  { "applications-multimedia", "applications-audio", "applications-video", NULL }, 0xC0642B },
-    { "Office",      { "applications-office", NULL }, 0x4C8C9A },
-    { "Settings",    { "preferences-system", "preferences-other", NULL }, 0x6E6E6E },
-    { "System",      { "applications-system", "utilities-system-monitor", "utilities-terminal", NULL }, 0x58606E },
-    { "Other",       { "application-x-executable", "applications-other", NULL }, 0x8A7F6A },
-};
-static const CatInfo *cat_lookup(const char *c) {
-    size_t n = sizeof cats / sizeof *cats;
-    for (size_t i = 0; i < n; i++) if (c && !strcmp(c, cats[i].cat)) return &cats[i];
-    return &cats[n - 1];
-}
-
-/* ---------------------------------------------------------- generated tile */
-
-static const char glyph_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789?";
-static const char *const font[][7] = {
-    {"01110","10001","10001","11111","10001","10001","10001"}, {"11110","10001","10001","11110","10001","10001","11110"},
-    {"01110","10001","10000","10000","10000","10001","01110"}, {"11110","10001","10001","10001","10001","10001","11110"},
-    {"11111","10000","10000","11110","10000","10000","11111"}, {"11111","10000","10000","11110","10000","10000","10000"},
-    {"01110","10001","10000","10111","10001","10001","01111"}, {"10001","10001","10001","11111","10001","10001","10001"},
-    {"01110","00100","00100","00100","00100","00100","01110"}, {"00111","00010","00010","00010","00010","10010","01100"},
-    {"10001","10010","10100","11000","10100","10010","10001"}, {"10000","10000","10000","10000","10000","10000","11111"},
-    {"10001","11011","10101","10101","10001","10001","10001"}, {"10001","11001","10101","10011","10001","10001","10001"},
-    {"01110","10001","10001","10001","10001","10001","01110"}, {"11110","10001","10001","11110","10000","10000","10000"},
-    {"01110","10001","10001","10001","10101","10010","01101"}, {"11110","10001","10001","11110","10100","10010","10001"},
-    {"01111","10000","10000","01110","00001","00001","11110"}, {"11111","00100","00100","00100","00100","00100","00100"},
-    {"10001","10001","10001","10001","10001","10001","01110"}, {"10001","10001","10001","10001","10001","01010","00100"},
-    {"10001","10001","10001","10101","10101","10101","01010"}, {"10001","10001","01010","00100","01010","10001","10001"},
-    {"10001","10001","01010","00100","00100","00100","00100"}, {"11111","00001","00010","00100","01000","10000","11111"},
-    {"01110","10001","10011","10101","11001","10001","01110"}, {"00100","01100","00100","00100","00100","00100","01110"},
-    {"01110","10001","00001","00010","00100","01000","11111"}, {"11110","00001","00001","01110","00001","00001","11110"},
-    {"00010","00110","01010","10010","11111","00010","00010"}, {"11111","10000","11110","00001","00001","10001","01110"},
-    {"00110","01000","10000","11110","10001","10001","01110"}, {"11111","00001","00010","00100","01000","01000","01000"},
-    {"01110","10001","10001","01110","10001","10001","01110"}, {"01110","10001","10001","01111","00001","00010","01100"},
-    {"01110","10001","00001","00010","00100","00000","00100"},
+static const char GLYPH_CHARS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#";
+static const char *const GLYPH[][7] = {   /* 5x7 bitmap font, '#' = pixel */
+ {".###.","#...#","#...#","#####","#...#","#...#","#...#"}, {"####.","#...#","#...#","####.","#...#","#...#","####."},
+ {".###.","#...#","#....","#....","#....","#...#",".###."}, {"####.","#...#","#...#","#...#","#...#","#...#","####."},
+ {"#####","#....","#....","####.","#....","#....","#####"}, {"#####","#....","#....","####.","#....","#....","#...."},
+ {".###.","#...#","#....","#.###","#...#","#...#",".####"}, {"#...#","#...#","#...#","#####","#...#","#...#","#...#"},
+ {".###.","..#..","..#..","..#..","..#..","..#..",".###."}, {"..###","...#.","...#.","...#.","...#.","#..#.",".##.."},
+ {"#...#","#..#.","#.#..","##...","#.#..","#..#.","#...#"}, {"#....","#....","#....","#....","#....","#....","#####"},
+ {"#...#","##.##","#.#.#","#.#.#","#...#","#...#","#...#"}, {"#...#","##..#","#.#.#","#..##","#...#","#...#","#...#"},
+ {".###.","#...#","#...#","#...#","#...#","#...#",".###."}, {"####.","#...#","#...#","####.","#....","#....","#...."},
+ {".###.","#...#","#...#","#...#","#.#.#","#..#.",".##.#"}, {"####.","#...#","#...#","####.","#.#..","#..#.","#...#"},
+ {".####","#....","#....",".###.","....#","....#","####."}, {"#####","..#..","..#..","..#..","..#..","..#..","..#.."},
+ {"#...#","#...#","#...#","#...#","#...#","#...#",".###."}, {"#...#","#...#","#...#","#...#","#...#",".#.#.","..#.."},
+ {"#...#","#...#","#...#","#.#.#","#.#.#","##.##","#...#"}, {"#...#","#...#",".#.#.","..#..",".#.#.","#...#","#...#"},
+ {"#...#","#...#",".#.#.","..#..","..#..","..#..","..#.."}, {"#####","....#","...#.","..#..",".#...","#....","#####"},
+ {".###.","#...#","#..##","#.#.#","##..#","#...#",".###."}, {"..#..",".##..","..#..","..#..","..#..","..#..",".###."},
+ {".###.","#...#","....#","...#.","..#..",".#...","#####"}, {"####.","....#","....#",".###.","....#","....#","####."},
+ {"...#.","..##.",".#.#.","#..#.","#####","...#.","...#."}, {"#####","#....","####.","....#","....#","#...#",".###."},
+ {"..##.",".#...","#....","####.","#...#","#...#",".###."}, {"#####","....#","...#.","..#..",".#...",".#...",".#..."},
+ {".###.","#...#","#...#",".###.","#...#","#...#",".###."}, {".###.","#...#","#...#",".####","....#","...#.",".##.."},
+ {".#.#.",".#.#.","#####",".#.#.","#####",".#.#.",".#.#."},
 };
 
-#define T 64
-static int clampc(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
-static int mixc(int c, int target, int pct) { return (c * (100 - pct) + target * pct) / 100; }
+static const char *const TILE_COLORS[][3] = {      /* background, border, highlight - muted so no tile shouts */
+ {"#4f6d8f","#33495f","#7d9bbd"}, {"#5d8a6b","#3d5c47","#8ab998"}, {"#8f6a4f","#5f4533","#bd977d"}, {"#7a5d8f","#503d5f","#a68abd"},
+ {"#8f4f5d","#5f333d","#bd7d8a"}, {"#4f8f87","#335f59","#7dbdb5"}, {"#8f854f","#5f5933","#bdb37d"}, {"#5d6a8f","#3d465f","#8a97bd"},
+ {"#6d8f4f","#485f33","#9bbd7d"}, {"#8f5f4f","#5f3f33","#bd8d7d"}, {"#4f7a8f","#33505f","#7da8bd"}, {"#7f6f6f","#554a4a","#aa9b9b"},
+};
 
-/* 64x64 XPM: rounded NeXT-style tile in the category colour with the app's initial on it. */
-static int gen_tile(const char *dest, unsigned rgb, int variant, char letter) {
-    int delta = (variant - 2) * 8;
-    int r = clampc((int)((rgb >> 16) & 255) + delta), g = clampc((int)((rgb >> 8) & 255) + delta), b = clampc((int)(rgb & 255) + delta);
-    static char px[T][T + 1]; static int in[T][T];
-    const int R = 7;
-    for (int y = 0; y < T; y++) for (int x = 0; x < T; x++) {
-        int cx = x < R ? R - 1 : x >= T - R ? T - R : x, cy = y < R ? R - 1 : y >= T - R ? T - R : y;
-        int dx = x - cx, dy = y - cy; in[y][x] = dx * dx + dy * dy <= R * R - R;
+int wmicons_generate(const char *key, const char *label, int size, char *out, size_t outlen) {
+    char dir[4096]; if (!cache_dir(dir, sizeof dir)) return 0;
+    int S = size < 32 ? 32 : size > 128 ? 128 : size;
+    int ci = (int)(fnv(key ? key : "", 2166136261u) % (sizeof TILE_COLORS / sizeof *TILE_COLORS));
+    int gi = (int)strlen(GLYPH_CHARS) - 1;                               /* '#': non-alphanumeric first character */
+    for (const char *p = label ? label : ""; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (isalnum(c) && c < 128) { const char *g = strchr(GLYPH_CHARS, toupper(c)); if (g) gi = (int)(g - GLYPH_CHARS); break; }
+        if (c >= 128) break;
     }
-    for (int y = 0; y < T; y++) {
-        for (int x = 0; x < T; x++) {
-            char c;
-            if (!in[y][x]) c = ' ';
-            else if (x == 0 || y == 0 || x == T - 1 || y == T - 1 || !in[y][x-1] || !in[y][x+1] || !in[y-1][x] || !in[y+1][x]) c = 'o';
+    char nm[80]; safe_name(key && *key ? key : "app", nm, sizeof nm);
+    char final[8300]; snprintf(final, sizeof final, "%s/gen-%s-%d-%08x.xpm", dir, nm, S, (unsigned)fnv(label ? label : "", fnv(key ? key : "", 2166136261u)));
+    if (is_file(final)) { snprintf(out, outlen, "%s", final); return 1; }
+
+    char *px = malloc((size_t)S * (size_t)S); if (!px) return 0;
+    int R = S / 7;                                                       /* corner radius */
+    for (int y = 0; y < S; y++)
+        for (int x = 0; x < S; x++) {
+            char c = '.';                                                /* '.' fill */
+            int cx = x < R ? R - x : x >= S - R ? x - (S - R - 1) : 0;
+            int cy = y < R ? R - y : y >= S - R ? y - (S - R - 1) : 0;
+            if (cx && cy && cx * cx + cy * cy > R * R) c = 't';          /* transparent corner */
             else {
-                int t = y, l = x, bt = T - 1 - y, rt = T - 1 - x, m = t;
-                if (l < m) m = l;
-                if (bt < m) m = bt;
-                if (rt < m) m = rt;
-                c = m > 3 ? '.' : (m == t || m == l) ? 'h' : 'd';
+                int edge = x == 0 || y == 0 || x == S - 1 || y == S - 1 || (cx && cy && cx * cx + cy * cy > (R - 1) * (R - 1));
+                if (edge) c = 'o';
+                else if ((y == 1 && x > R / 2 && x < S - R / 2) || (x == 1 && y > R / 2 && y < S - R / 2)) c = 'h';   /* top/left light edge */
             }
-            px[y][x] = c;
+            px[y * S + x] = c;
         }
-        px[y][T] = 0;
-    }
-    const char *p = strchr(glyph_chars, letter); int gi = p ? (int)(p - glyph_chars) : (int)strlen(glyph_chars) - 1;
-    const int S = 6, ox = (T - 5 * S) / 2, oy = (T - 7 * S) / 2;
-    for (int pass = 0; pass < 2; pass++) {                           /* shadow, then letter */
-        int off = pass == 0 ? 2 : 0; char ch = pass == 0 ? 's' : 'w';
-        for (int gy = 0; gy < 7; gy++) for (int gx = 0; gx < 5; gx++) {
-            if (font[gi][gy][gx] != '1') continue;
-            for (int yy = 0; yy < S; yy++) for (int xx = 0; xx < S; xx++) px[oy + gy * S + yy + off][ox + gx * S + xx + off] = ch;
-        }
-    }
-    char tmp[4700]; snprintf(tmp, sizeof tmp, "%s.%d.tmp.xpm", dest, (int)getpid());
-    FILE *o = fopen(tmp, "w"); if (!o) return 0;
-    fprintf(o, "/* XPM */\nstatic char *wm_icon[] = {\n\"%d %d 7 1\",\n\"  c None\",\n", T, T);
-    fprintf(o, "\". c #%02x%02x%02x\",\n", r, g, b);
-    fprintf(o, "\"h c #%02x%02x%02x\",\n", mixc(r, 255, 40), mixc(g, 255, 40), mixc(b, 255, 40));
-    fprintf(o, "\"d c #%02x%02x%02x\",\n", mixc(r, 0, 40), mixc(g, 0, 40), mixc(b, 0, 40));
-    fprintf(o, "\"o c #%02x%02x%02x\",\n", mixc(r, 0, 70), mixc(g, 0, 70), mixc(b, 0, 70));
-    fprintf(o, "\"w c #FFFFFF\",\n\"s c #%02x%02x%02x\",\n", mixc(r, 0, 70), mixc(g, 0, 70), mixc(b, 0, 70));
-    for (int y = 0; y < T; y++) fprintf(o, "\"%s\"%s\n", px[y], y + 1 < T ? "," : "");
-    fputs("};\n", o);
-    if (fclose(o) || rename(tmp, dest)) { unlink(tmp); return 0; }
-    return 1;
+    int k = S / 14; if (k < 2) k = 2;
+    int gx = (S - 5 * k) / 2, gy = (S - 7 * k) / 2;
+    for (int r = 0; r < 7; r++)
+        for (int c = 0; c < 5; c++)
+            if (GLYPH[gi][r][c] == '#')
+                for (int dy = 0; dy < k; dy++) for (int dx = 0; dx < k; dx++) px[(gy + r * k + dy) * S + gx + c * k + dx] = 'x';
+
+    char tmp[8400]; snprintf(tmp, sizeof tmp, "%s.%d.tmp", final, (int)getpid());
+    FILE *f = fopen(tmp, "w"); if (!f) { free(px); return 0; }
+    fprintf(f, "/* XPM */\nstatic char *icon[] = {\n\"%d %d 5 1\",\n\"t c None\",\n\". c %s\",\n\"o c %s\",\n\"h c %s\",\n\"x c #f2f2f2\",\n",
+            S, S, TILE_COLORS[ci][0], TILE_COLORS[ci][1], TILE_COLORS[ci][2]);
+    for (int y = 0; y < S; y++) { fputc('"', f); fwrite(px + (size_t)y * S, 1, (size_t)S, f); fputs(y + 1 < S ? "\",\n" : "\"\n", f); }
+    fputs("};\n", f); free(px);
+    if (fclose(f) || rename(tmp, final)) { unlink(tmp); return 0; }
+    snprintf(out, outlen, "%s", final); return 1;
 }
 
-static char initial(const char *name) {
-    for (; *name; name++) if ((unsigned char)*name < 128 && isalnum((unsigned char)*name)) return (char)toupper((unsigned char)*name);
-    return '?';
-}
-
-/* -------------------------------------------------------------- public API */
+/* ------------------------------------------------------------ per-app */
 
 const char *wmicons_source_name(WMIconSource s) {
-    switch (s) {
-    case WMICON_THEME: return "theme"; case WMICON_CONVERTED: return "converted";
-    case WMICON_CATEGORY: return "category"; case WMICON_GENERATED: return "generated";
-    default: return "none";
-    }
+    return s == WMICON_FILE ? "file" : s == WMICON_CONVERTED ? "converted" : s == WMICON_GENERATED ? "generated" : "none";
 }
 
-WMIconSource wmicons_for_app(const WMApp *a, int size, char *out, size_t outlen) {
-    if (outlen) out[0] = 0;
-    if (size <= 0) size = 64;
-    /* 1+2: the app's own icon, trying every name it is known by */
-    char bin[256] = "", lcls[256] = ""; const char *cand[6]; int nc = 0;
-    if (a->icon[0]) cand[nc++] = a->icon;
-    if (a->flatpak_id[0]) cand[nc++] = a->flatpak_id;
-    cand[nc++] = a->id;
-    if (a->wm_class[0]) {
-        cand[nc++] = a->wm_class;
-        size_t k = 0; for (; a->wm_class[k] && k + 1 < sizeof lcls; k++) lcls[k] = (char)tolower((unsigned char)a->wm_class[k]);
-        lcls[k] = 0; if (strcmp(lcls, a->wm_class)) cand[nc++] = lcls;
-    }
-    if (!a->flatpak_id[0]) { wmapps_bin(a, bin, sizeof bin); if (bin[0]) cand[nc++] = bin; }
+WMIconSource wmicons_for_app(const WMApp *a, int size, char *out, size_t outlen, int *guessed) {
+    char cand[6][512]; int nc = 0; char bin[256];
+    #define ADDC(s) do { const char *s_ = (s); int dup_ = 0; if (s_ && *s_) { for (int i_ = 0; i_ < nc; i_++) if (!strcmp(cand[i_], s_)) dup_ = 1; \
+                         if (!dup_ && nc < 6) snprintf(cand[nc++], sizeof cand[0], "%s", s_); } } while (0)
+    ADDC(a->icon);
+    char low[512]; snprintf(low, sizeof low, "%s", a->wm_class); for (char *p = low; *p; p++) *p = (char)tolower((unsigned char)*p);
+    ADDC(a->flatpak_id); ADDC(a->id); ADDC(low);
+    const char *tail = strrchr(a->id, '.'); if (tail) { char t[512]; snprintf(t, sizeof t, "%s", tail + 1); for (char *p = t; *p; p++) *p = (char)tolower((unsigned char)*p); ADDC(t); }
+    if (!a->flatpak_id[0]) ADDC(wmapps_bin(a, bin, sizeof bin));
+    #undef ADDC
+    if (guessed) *guessed = 0;
     for (int i = 0; i < nc; i++) {
-        int dup = 0; for (int j = 0; j < i; j++) if (!strcmp(cand[i], cand[j])) dup = 1;
-        Found f; if (dup || !find_icon(cand[i], size, &f)) continue;
-        WMIconSource s = pick(&f, size, WMICON_THEME, WMICON_CONVERTED, out, outlen);
-        if (s != WMICON_NONE) return s;
+        char path[4096]; int r = wmicons_resolve(cand[i], size, path, sizeof path);
+        int from_icon = a->icon[0] && !strcmp(cand[i], a->icon);
+        if (r == 1) { snprintf(out, outlen, "%s", path); if (guessed) *guessed = !from_icon; return WMICON_FILE; }
+        if (r == 2 && wmicons_convert_svg(path, size, out, outlen)) { if (guessed) *guessed = !from_icon; return WMICON_CONVERTED; }
     }
-    /* 3: the theme's generic icon for the category */
-    const CatInfo *ci = cat_lookup(a->category);
-    for (int i = 0; i < 4 && ci->names[i]; i++) {
-        Found f; if (!find_icon(ci->names[i], size, &f)) continue;
-        WMIconSource s = pick(&f, size, WMICON_CATEGORY, WMICON_CATEGORY, out, outlen);
-        if (s != WMICON_NONE) return s;
-    }
-    /* 4: draw one */
-    char cd[4096]; if (!cache_dir(cd, sizeof cd)) return WMICON_NONE;
-    char L = initial(a->name), dest[4608]; int variant = (int)(hash(a->id) % 5);
-    snprintf(dest, sizeof dest, "%s/gen1-%s-%02x-%d.xpm", cd, ci->cat, (unsigned)(unsigned char)L, variant);
-    if (!exists(dest) && !gen_tile(dest, ci->rgb, variant, L)) return WMICON_NONE;
-    snprintf(out, outlen, "%s", dest); return WMICON_GENERATED;
+    if (wmicons_generate(a->id, a->name, size, out, outlen)) return WMICON_GENERATED;
+    return WMICON_NONE;
 }

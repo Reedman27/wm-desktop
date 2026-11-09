@@ -31,14 +31,18 @@ build/wmapps exec htop -t "kitty -e" $F | tr '\n' '|' | grep -qF 'kitty|-e|htop|
 build/wmapps exec nonexistent-app $F 2>/dev/null && fail "exec: unknown app must fail"
 build/wmapps skipped $F > build/skipped.txt
 [ ! -s build/skipped.txt ] || fail "skipped: fixtures are all valid, got: $(cat build/skipped.txt)"
-# icons: every app gets a PNG/XPM, nothing is svg
-IC=$(mktemp -d); IC_OUT=$(XDG_CACHE_HOME="$IC" $W icons $F) || fail "icons: an app was left without an icon"
-[ "$(echo "$IC_OUT" | wc -l)" -eq 4 ]                                  || fail "icons: one line per app"
-echo "$IC_OUT" | grep -q '^theme .*org.gnome.Calculator.*128x128'      || fail "icons: calculator should use its theme icon"
-echo "$IC_OUT" | grep -q '^generated .*htop .*\.xpm$'                 || fail "icons: htop has no icon and should get a drawn one"
-! echo "$IC_OUT" | grep -qi '\.svg$'                                  || fail "icons: svg handed out"
-XDG_CACHE_HOME=/proc/nope $W icons $F >/dev/null 2>&1 && fail "icons: unwritable cache must report missing icons"
-rm -rf "$IC"
+# icons: every app gets one; the project's own app ships a real icon
+C="$PWD/build/icon-cache"; rm -rf "$C"; export XDG_CACHE_HOME="$C"
+IC=$(build/wmapps icons $F)
+echo "$IC" | grep -q ' 0 without icon' || fail "icons: some app has no icon: $IC"
+echo "$IC" | grep -q '^file .*org.gnome.Calculator' || fail "icons: theme icon not used for Calculator"
+echo "$IC" | grep -q '^generated .*htop' || fail "icons: app without any icon must get a generated tile"
+XDG_DATA_DIRS="$PWD/data" build/wmapps icons --dir "$PWD/data" | grep -A1 '^file  *wmfiles' | grep -q 'wmfiles\.png' || fail "icons: wmfiles must resolve to its shipped PNG"
+WMDOCK_APPDIR="$PWD/tests/fixtures/share" build/wmdock attrs | grep -q 'AlwaysUserIcon' && fail "attrs: AlwaysUserIcon only with --always"
+WMDOCK_APPDIR="$PWD/tests/fixtures/share" build/wmdock attrs --always | grep -q 'AlwaysUserIcon = Yes' || fail "attrs --always"
+[ "$(WMDOCK_APPDIR="$PWD/tests/fixtures/share" build/wmdock attrs | grep -c ' = { Icon = ')" -eq 4 ] || fail "attrs: every app (4) must get an Icon entry"
+WMDOCK_APPDIR="$PWD/tests/fixtures/share" build/wmdock state org.gnome.Calculator nonexistent-app 2>/dev/null | tr '\n' '|' | grep -qF '},|);' && fail "state: trailing comma when a later id is unknown"
+unset XDG_CACHE_HOME
 echo "all WMApps tests passed"
 
 # ---- wmmenud: live inotify behaviour ----
@@ -85,3 +89,26 @@ H=$(mktemp -d); HOME=$H XDG_CONFIG_HOME= $G apply 2>/dev/null
 rm -rf "$H"
 WMGFX_SYSFS=/nonexistent $G detect | grep -q 'primary: none' || fail "gfx: no-gpu case"
 echo "all wmgfx tests passed"
+
+# ---- wmdock apply-icons ----
+export XDG_CACHE_HOME="$PWD/build/icon-cache"
+A=$(mktemp -d); mkdir -p "$A/Defaults"; AF="$A/Defaults/WMWindowAttributes"
+export WMAKER_USER_ROOT="$A" WMDOCK_APPDIR="$PWD/tests/fixtures/share"
+D=build/wmdock
+printf '{\n  "mine.Mine" = { Icon = "/my/own.png"; };\n}\n' > "$AF"
+$D apply-icons --dry-run 2>/dev/null | grep -q ' = { Icon = '       || fail "apply-icons: dry run prints nothing"
+[ "$(wc -l < "$AF")" -eq 3 ]                                           || fail "apply-icons: dry run changed the file"
+$D apply-icons 2>/dev/null                                             || fail "apply-icons failed"
+grep -q '"mine.Mine" = { Icon = "/my/own.png"; };' "$AF"              || fail "apply-icons: existing entry lost"
+[ "$(grep -c ' = { Icon = ' "$AF")" -eq 5 ]                            || fail "apply-icons: expected 1 existing + 4 new entries"
+ls "$AF".bak-* >/dev/null 2>&1                                         || fail "apply-icons: no backup written"
+grep -q '/my/own.png' "$AF".bak-*                                      || fail "apply-icons: backup does not hold the original"
+[ "$(head -c1 "$AF")" = "{" ] && [ "$(tail -n1 "$AF")" = "}" ]         || fail "apply-icons: result is not a dict"
+cp "$AF" "$A/before"; $D apply-icons 2>/dev/null; cmp -s "$AF" "$A/before" || fail "apply-icons: second run must change nothing"
+echo 'garbage, not a dict' > "$AF"; cp "$AF" "$A/before"
+$D apply-icons 2>/dev/null && fail "apply-icons: must refuse an unparseable file"
+cmp -s "$AF" "$A/before"                                               || fail "apply-icons: touched an unparseable file"
+rm -f "$AF"; $D apply-icons 2>/dev/null                                || fail "apply-icons: creating a new file failed"
+[ "$(grep -c ' = { Icon = ' "$AF")" -eq 4 ]                            || fail "apply-icons: new file entries"
+rm -rf "$A"; unset WMAKER_USER_ROOT WMDOCK_APPDIR
+echo "all apply-icons tests passed"

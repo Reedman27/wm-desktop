@@ -21,5 +21,6 @@ int main(int argc, char **argv) {
     Window keep[256]; unsigned long k = 0;
     for (unsigned long i = 0; i < n && k < 256; i++) if (((Window *)data)[i] != w) keep[k++] = ((Window *)data)[i];
     XChangeProperty(d, root, list, XA_WINDOW, 32, PropModeReplace, (unsigned char *)keep, (int)k);
+    if (data) XFree(data);
     XDestroyWindow(d, w); XSync(d, False); XCloseDisplay(d); return 0;
 }

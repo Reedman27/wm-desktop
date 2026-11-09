@@ -4,24 +4,29 @@
  *   wmdock list                 running windows: wid, class, app id, icon, title (tab separated)
  *   wmdock watch                same, as a stream of "open"/"close" lines (flushed per event)
  *   wmdock state ID...          WMState "Dock" Applications entries for the given app ids
- *   wmdock apply-icons [--dry-run]   merge those icons into WMWindowAttributes (backup first, never overwrites your entries)
- *   wmdock attrs                WMWindowAttributes snippet that gives every app an icon (PNG/XPM; see wmicons.h)
+ *   wmdock attrs [--always]     WMWindowAttributes snippet that gives every app an icon (theme icon, rendered
+ *                               SVG, or a generated tile). Window Maker uses it when the window supplies none;
+ *                               --always adds AlwaysUserIcon = Yes so it is used even then.
+ *   wmdock apply-icons [--dry-run] [--always]
+ *                               merge those icon entries into ~/GNUstep/Defaults/WMWindowAttributes: backup
+ *                               first, existing entries never touched, refuses a file it cannot parse.
  *
  * Needs only an EWMH window manager (Window Maker provides _NET_CLIENT_LIST). */
 #include "../../core/applications/wmapps.h"
 #include "../../core/applications/wmicons.h"
 #include "../../core/applications/wmmenu.h"
 #include "../../core/configuration/wmconfig.h"
+#include "../../core/theme/wmtheme.h"
+#include <ctype.h>
+#include <time.h>
+#include <unistd.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include <unistd.h>
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <time.h>
 
 typedef struct { Window w; char instance[128], cls[128], title[256]; } Win;
 
@@ -60,9 +65,11 @@ static int clients(Win **out) {
 /* Window -> registry app: matching lives in WMApps so every component agrees. */
 static const WMApp *match(const WMAppRegistry *r, const Win *w) { return wmapps_match_window(r, w->instance, w->cls); }
 
+static int icon_size(void) { int n = atoi(wmconfig_get("icon_size", "64")); return n >= 16 && n <= 256 ? n : 64; }
+
 static void print_win(const char *prefix, const WMAppRegistry *r, const Win *w) {
     const WMApp *a = match(r, w); char icon[4096] = "";
-    if (a) wmicons_for_app(a, 64, icon, sizeof icon);
+    if (a) wmicons_for_app(a, icon_size(), icon, sizeof icon, NULL);
     printf("%s0x%lx\t%s\t%s\t%s\t%s\n", prefix, w->w, w->cls, a ? a->id : "-", icon[0] ? icon : "-", w->title);
 }
 
@@ -72,9 +79,6 @@ static char *cap_class(const char *s) {     /* "gnome-calculator" -> "Gnome-calc
     char *r = strdup(s); if (r && r[0] >= 'a' && r[0] <= 'z') r[0] -= 32; return r;
 }
 
-
-static void pqf(FILE *o, const char *s) { fputc('"', o); for (; *s; s++) { if (*s == '"' || *s == '\\') fputc('\\', o); fputc(*s, o); } fputc('"', o); }
-
 static char *slurp_file(const char *path) {
     FILE *f = fopen(path, "rb"); if (!f) return NULL;
     size_t cap = 4096, n = 0; char *b = malloc(cap);
@@ -82,6 +86,8 @@ static char *slurp_file(const char *path) {
     fclose(f); if (!b) return NULL;
     b[n] = 0; return b;
 }
+
+static void pqf(FILE *o, const char *s) { fputc('"', o); for (; *s; s++) { if (*s == '"' || *s == '\\') fputc('\\', o); fputc(*s, o); } fputc('"', o); }
 
 /* Window Maker window name "instance.Class" for an app (same guess `state` and `attrs` use). */
 static void app_key(const WMApp *a, char *name, size_t n) {
@@ -91,14 +97,13 @@ static void app_key(const WMApp *a, char *name, size_t n) {
 }
 
 /* Merge an Icon entry for every app into WMWindowAttributes. Existing entries are never touched or
- * replaced; the old file is copied to WMWindowAttributes.bak-<time> first. Returns 0 on success. */
-static int apply_icons(const WMAppRegistry *r, int dry) {
+ * replaced; the old file is copied to WMWindowAttributes.bak-<time> first. Returns 0 on success.
+ * (Design and file-safety checks adapted from the user's parallel implementation.) */
+static int apply_icons(const WMAppRegistry *r, int dry, int always) {
     char path[4096];
-    const char *over = getenv("WMDOCK_ATTRS_FILE"), *root = getenv("GNUSTEP_USER_ROOT"), *home = getenv("HOME");
+    const char *over = getenv("WMDOCK_ATTRS_FILE");
     if (over && *over) snprintf(path, sizeof path, "%s", over);
-    else if (root && *root) snprintf(path, sizeof path, "%s/Defaults/WMWindowAttributes", root);
-    else if (home && *home) snprintf(path, sizeof path, "%s/GNUstep/Defaults/WMWindowAttributes", home);
-    else { fputs("wmdock: no HOME; set GNUSTEP_USER_ROOT\n", stderr); return 1; }
+    else if (!wmtheme_defaults_path("WMWindowAttributes", path, sizeof path)) { fputs("wmdock: no HOME; set WMAKER_USER_ROOT\n", stderr); return 1; }
 
     char *old = slurp_file(path), *close = NULL; const char *tail = NULL; int blank = 1;
     for (const char *p = old; p && *p; p++) if (!isspace((unsigned char)*p)) { blank = 0; break; }
@@ -118,8 +123,8 @@ static int apply_icons(const WMAppRegistry *r, int dry) {
         app_key(a, name, sizeof name); snprintf(quoted, sizeof quoted, "\"%s\"", name);
         fflush(m);
         if ((old && strstr(old, quoted)) || (ent && strstr(ent, quoted))) { kept++; continue; }
-        if (wmicons_for_app(a, 64, icon, sizeof icon) == WMICON_NONE) { noicon++; continue; }
-        fputs("  ", m); pqf(m, name); fputs(" = { Icon = ", m); pqf(m, icon); fputs("; };\n", m); added++;
+        if (wmicons_for_app(a, icon_size(), icon, sizeof icon, NULL) == WMICON_NONE) { noicon++; continue; }
+        fputs("  ", m); pqf(m, name); fputs(" = { Icon = ", m); pqf(m, icon); fputs(always ? "; AlwaysUserIcon = Yes; };\n" : "; };\n", m); added++;
     }
     fclose(m);
     if (noicon) fprintf(stderr, "wmdock: %d app(s) had no icon at all (is the icon cache writable?)\n", noicon);
@@ -146,34 +151,38 @@ static int apply_icons(const WMAppRegistry *r, int dry) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fputs("usage: wmdock list|watch|state ID...|attrs|apply-icons [--dry-run]\n", stderr); return 2; }
-    WMAppRegistry r; wmapps_scan(&r, NULL, getenv("WMDOCK_APPDIR")); wmicons_set_dir(getenv("WMDOCK_APPDIR"));
+    if (argc < 2) { fputs("usage: wmdock list|watch|state ID...|attrs [--always]|apply-icons [--dry-run] [--always]\n", stderr); return 2; }
+    wmicons_set_extra_dir(getenv("WMDOCK_APPDIR"));
+    WMAppRegistry r; wmapps_scan(&r, NULL, getenv("WMDOCK_APPDIR"));
     const char *mode = argv[1];
+
     if (!strcmp(mode, "apply-icons")) {
-        int rc = apply_icons(&r, argc > 2 && !strcmp(argv[2], "--dry-run")); wmapps_free(&r); return rc;
+        int dry = 0, always = 0;
+        for (int i = 2; i < argc; i++) { if (!strcmp(argv[i], "--dry-run")) dry = 1; else if (!strcmp(argv[i], "--always")) always = 1; }
+        int rc = apply_icons(&r, dry, always); wmapps_free(&r); return rc;
     }
 
     if (!strcmp(mode, "state") || !strcmp(mode, "attrs")) {          /* no X connection needed */
-        int st = !strcmp(mode, "state"), pos = 0;
+        int st = !strcmp(mode, "state"), pos = 0, always = 0, printed = 0;
+        for (int i = 2; !st && i < argc; i++) if (!strcmp(argv[i], "--always")) always = 1;
         if (st) puts("// Paste into the \"Dock\" dictionary of ~/GNUstep/Defaults/WMState (Window Maker rewrites it on exit)\nApplications = (");
         else puts("{");
         for (int i = st ? 2 : 0; st ? i < argc : (size_t)i < r.count; i++) {
             const WMApp *a = st ? wmapps_find(&r, argv[i]) : &r.apps[i];
             if (!a) { fprintf(stderr, "wmdock: no such app: %s\n", argv[i]); continue; }
             char icon[4096] = "", b[256], name[600];
-            WMIconSource k = wmicons_for_app(a, 64, icon, sizeof icon);
+            WMIconSource k = st ? WMICON_NONE : wmicons_for_app(a, icon_size(), icon, sizeof icon, NULL);
             const char *inst = a->wm_class[0] ? a->wm_class : wmapps_bin(a, b, sizeof b);
             char *cls = cap_class(a->wm_class[0] ? a->wm_class : inst);
             snprintf(name, sizeof name, "%s.%s", inst, cls); free(cls);
             if (st) {
-                printf("  {\n    Name = "); pq(name); char *c0 = wmapps_shell_command(a, NULL, 0, wmconfig_get("terminal", "xterm -e")), *c1 = wmmenu_wm_escape(c0);
+                printf("%s  {\n    Name = ", printed++ ? ",\n" : ""); pq(name); char *c0 = wmapps_shell_command(a, NULL, 0, wmconfig_get("terminal", "xterm -e")), *c1 = wmmenu_wm_escape(c0);
                 printf(";\n    Command = "); pq(c1); free(c0); free(c1);
-                printf(";\n    AutoLaunch = No;\n    Lock = No;\n    Forced = No;\n    BuggyApplication = No;\n    Position = \"0,%d\";\n  }%s\n",
-                       ++pos, i + 1 < argc ? "," : "");
-            } else if (k != WMICON_NONE) { printf("  "); pq(name); printf(" = { Icon = "); pq(icon); puts("; };"); }
-            else fprintf(stderr, "wmdock: no icon for %s (is the icon cache writable?)\n", a->id);
+                printf(";\n    AutoLaunch = No;\n    Lock = No;\n    Forced = No;\n    BuggyApplication = No;\n    Position = \"0,%d\";\n  }",
+                       ++pos);
+            } else if (k != WMICON_NONE) { printf("  "); pq(name); printf(" = { Icon = "); pq(icon); printf(";%s };\n", always ? " AlwaysUserIcon = Yes;" : ""); }
         }
-        puts(st ? ");" : "}");
+        puts(st ? "\n);" : "}");
         wmapps_free(&r); return 0;
     }
 

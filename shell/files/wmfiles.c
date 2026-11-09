@@ -1,12 +1,16 @@
 #define _POSIX_C_SOURCE 200809L
-/* wmfiles - NeXTSTEP-style column file browser (Xlib only).
+#define _DEFAULT_SOURCE
+/* wmfiles - column file browser (Xlib only) that wears your Window Maker theme.
  *
  *   wmfiles [directory]
  *
  * Click a folder to open it in the next column, double-click a file to open it with
  * $WMFILES_OPENER (default xdg-open). Keys: Up/Down select, Right enter, Left back,
- * h toggles hidden files, q quits. Wheel scrolls the column under the pointer. */
-#include "../../themes/nextstep/palette.h"
+ * h toggles hidden files, q quits. Wheel scrolls the column under the pointer.
+ * Colours and fonts come from the active Window Maker theme (see core/theme/wmtheme.h):
+ * title bar = MenuTitleBack/Color/Font, body = MenuTextBack/Color/Font, selection = Highlight*.
+ * The theme is re-read when it changes. */
+#include "../../core/theme/wmthemex.h"
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -23,24 +27,18 @@
 
 #define VISIBLE 3
 #define MAXCOL 64
-#define ROWH 18
-#define TOP 24
+#define ROWH (th.font->ascent + th.font->descent + 5)
+#define TOP (th.title_font->ascent + th.title_font->descent + 10)
 
 typedef struct { char *name; int dir; } Entry;
 typedef struct { char path[PATH_MAX]; Entry *e; int n, sel, scroll; } Column;
 
-static Display *dpy; static Window win; static GC gc; static XFontStruct *font;
+static Display *dpy; static Window win; static GC gc; static WMThemeX th;
 static Column col[MAXCOL]; static int depth, width = 600, height = 360, show_hidden;
-static unsigned long c_face, c_dark, c_black, c_white, c_light;
 static int active;                 /* column that keyboard navigation acts on */
 static long long last_click_ms; static int last_col = -1, last_row = -1;
 
 static long long now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000LL + t.tv_nsec / 1000000; }
-static unsigned long alloc(unsigned long rgb) {
-    XColor c; c.red = ((rgb >> 16) & 255) * 257; c.green = ((rgb >> 8) & 255) * 257; c.blue = (rgb & 255) * 257; c.flags = DoRed | DoGreen | DoBlue;
-    XAllocColor(dpy, DefaultColormap(dpy, DefaultScreen(dpy)), &c); return c.pixel;
-}
-
 static int cmp(const void *a, const void *b) {
     const Entry *x = a, *y = b; if (x->dir != y->dir) return y->dir - x->dir; return strcasecmp(x->name, y->name);
 }
@@ -74,27 +72,31 @@ static void select_row(int ci, int row) {
 }
 
 static void bevel(int x, int y, int w, int h, int sunken) {
-    XSetForeground(dpy, gc, sunken ? c_dark : c_white); XDrawLine(dpy, win, gc, x, y, x + w - 2, y); XDrawLine(dpy, win, gc, x, y, x, y + h - 2);
-    XSetForeground(dpy, gc, sunken ? c_white : c_dark); XDrawLine(dpy, win, gc, x + 1, y + h - 1, x + w - 1, y + h - 1); XDrawLine(dpy, win, gc, x + w - 1, y + 1, x + w - 1, y + h - 1);
+    XSetForeground(dpy, gc, sunken ? th.dark : th.light); XDrawLine(dpy, win, gc, x, y, x + w - 2, y); XDrawLine(dpy, win, gc, x, y, x, y + h - 2);
+    XSetForeground(dpy, gc, sunken ? th.light : th.dark); XDrawLine(dpy, win, gc, x + 1, y + h - 1, x + w - 1, y + h - 1); XDrawLine(dpy, win, gc, x + w - 1, y + 1, x + w - 1, y + h - 1);
 }
 
 static int first_visible(void) { return depth > VISIBLE ? depth - VISIBLE : 0; }
 
 static void redraw(void) {
-    XSetForeground(dpy, gc, c_face); XFillRectangle(dpy, win, gc, 0, 0, (unsigned)width, (unsigned)height);
-    XSetFont(dpy, gc, font->fid);
-    const char *cur = col[active < depth ? active : depth - 1].path;                        /* path bar */
-    XSetForeground(dpy, gc, c_black); XDrawString(dpy, win, gc, 8, 16, cur, (int)strlen(cur));
+    if (wmthemex_changed(&th)) { wmthemex_load(dpy, &th, NULL, NULL); XSetWindowBackground(dpy, win, th.face); }
+    XSetForeground(dpy, gc, th.face); XFillRectangle(dpy, win, gc, 0, 0, (unsigned)width, (unsigned)height);
+    const char *cur = col[active < depth ? active : depth - 1].path;                        /* path bar = a menu title bar */
+    int bar = TOP - 3;
+    XSetForeground(dpy, gc, th.title_face); XFillRectangle(dpy, win, gc, 0, 0, (unsigned)width, (unsigned)bar);
+    XSetForeground(dpy, gc, th.title_dark); XDrawLine(dpy, win, gc, 0, bar, width - 1, bar);
+    XSetFont(dpy, gc, th.title_font->fid); XSetForeground(dpy, gc, th.title_text);
+    XDrawString(dpy, win, gc, 8, 4 + th.title_font->ascent, cur, (int)strlen(cur));
+    XSetFont(dpy, gc, th.font->fid);
     int cw = width / VISIBLE, f = first_visible();
     for (int k = 0; k < VISIBLE && f + k < depth; k++) {
         Column *c = &col[f + k]; int x = k * cw, rows = (height - TOP - 4) / ROWH;
-        XSetForeground(dpy, gc, c_white); XFillRectangle(dpy, win, gc, x + 3, TOP, (unsigned)cw - 6, (unsigned)(height - TOP - 3));
         for (int r = 0; r < rows && r + c->scroll < c->n; r++) {
-            int i = r + c->scroll, y = TOP + r * ROWH; int sel = i == c->sel;
-            if (sel) { XSetForeground(dpy, gc, f + k == active ? c_black : c_light); XFillRectangle(dpy, win, gc, x + 4, y, (unsigned)cw - 8, ROWH); }
-            XSetForeground(dpy, gc, sel && f + k == active ? c_white : c_black);
-            XDrawString(dpy, win, gc, x + 8, y + 13, c->e[i].name, (int)strlen(c->e[i].name));
-            if (c->e[i].dir) XDrawString(dpy, win, gc, x + cw - 16, y + 13, ">", 1);
+            int i = r + c->scroll, y = TOP + r * ROWH; int sel = i == c->sel, act = f + k == active;
+            if (sel) { XSetForeground(dpy, gc, act ? th.hi : th.dark); XFillRectangle(dpy, win, gc, x + 4, y, (unsigned)cw - 8, (unsigned)ROWH); }
+            XSetForeground(dpy, gc, sel && act ? th.hi_text : th.text);
+            XDrawString(dpy, win, gc, x + 8, y + 2 + th.font->ascent, c->e[i].name, (int)strlen(c->e[i].name));
+            if (c->e[i].dir) XDrawString(dpy, win, gc, x + cw - 16, y + 2 + th.font->ascent, ">", 1);
         }
         bevel(x + 2, TOP - 1, cw - 4, height - TOP, 1);
     }
@@ -149,10 +151,8 @@ int main(int argc, char **argv) {
     if (!arg || !realpath(arg, start)) { fprintf(stderr, "wmfiles: cannot open %s\n", arg ? arg : "(no HOME)"); return 1; }
     dpy = XOpenDisplay(NULL); if (!dpy) { fputs("wmfiles: cannot open display\n", stderr); return 1; }
     int scr = DefaultScreen(dpy);
-    font = XLoadQueryFont(dpy, "-*-helvetica-medium-r-normal--12-*-*-*-*-*-iso8859-1"); if (!font) font = XLoadQueryFont(dpy, "fixed");
-    if (!font) { fputs("wmfiles: no X fonts\n", stderr); return 1; }
-    c_face = alloc(NS_GRAY); c_dark = alloc(NS_DARK_GRAY); c_black = alloc(NS_BLACK); c_white = alloc(NS_WHITE); c_light = alloc(NS_LIGHT_GRAY);
-    win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 100, 100, (unsigned)width, (unsigned)height, 0, 0, c_face);
+    if (wmthemex_load(dpy, &th, NULL, NULL) < 0) { fputs("wmfiles: no X fonts\n", stderr); return 1; }
+    win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 100, 100, (unsigned)width, (unsigned)height, 0, 0, th.face);
     XStoreName(dpy, win, "File Viewer"); XClassHint ch = { "wmfiles", "WMFiles" }; XSetClassHint(dpy, win, &ch);
     Atom del = XInternAtom(dpy, "WM_DELETE_WINDOW", False); XSetWMProtocols(dpy, win, &del, 1);
     XSelectInput(dpy, win, ExposureMask | ButtonPressMask | KeyPressMask | StructureNotifyMask);

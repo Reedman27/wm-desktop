@@ -1,27 +1,45 @@
-/* WMIcons - find an icon Window Maker can load for every application.
+/* WMIcons - find an icon for every application, in a form Window Maker can load.
  *
- * Window Maker only loads PNG/XPM, so the lookup is a ladder; the first rung that works wins:
- *   1. THEME      the app's own Icon= (name or absolute path), then its Flatpak ID, desktop-file ID,
- *                 StartupWMClass and binary name, searched in every installed icon theme
- *   2. CONVERTED  an SVG-only icon rendered to a cached PNG (rsvg-convert, ImageMagick or Inkscape)
- *   3. CATEGORY   the theme's generic icon for the app's menu category (applications-games, ...)
- *   4. GENERATED  a drawn tile: category colour, bevelled border, the app's initial
- * Rungs 2 and 4 write into $XDG_CACHE_HOME/wm-desktop/icons (default ~/.cache/wm-desktop/icons). */
+ * Window Maker loads PNG and XPM (not SVG), so the pipeline for an app is:
+ *   1. theme lookup per the Icon Theme Specification: your theme (WMICONS_THEME env, the
+ *      'icon_theme' setting, or GTK's gtk-icon-theme-name), its Inherits chain, hicolor,
+ *      then any other installed theme, then pixmaps/. index.theme directory sizes are honoured;
+ *      symbolic (monochrome) directories are skipped.
+ *   2. SVG-only hits are rendered to a PNG in $XDG_CACHE_HOME/wm-desktop/icons with
+ *      rsvg-convert, ImageMagick (magick/convert) or inkscape, whichever is in PATH (none required).
+ *   3. If Icon= names nothing usable, other names the app is known by are tried
+ *      (StartupWMClass, desktop-file ID and its last component, program name).
+ *   4. Last resort: a generated XPM tile (colour from the app ID, the app's initial on it).
+ * So wmicons_for_app() returns a loadable file whenever the cache directory is writable. */
 #ifndef WMICONS_H
 #define WMICONS_H
 #include "wmapps.h"
 #include <stddef.h>
 
-typedef enum { WMICON_NONE, WMICON_THEME, WMICON_CONVERTED, WMICON_CATEGORY, WMICON_GENERATED } WMIconSource;
+typedef enum {
+    WMICON_NONE = 0,     /* nothing found and nothing could be generated */
+    WMICON_FILE,         /* an existing PNG/XPM from a theme or path */
+    WMICON_CONVERTED,    /* SVG rendered to a cached PNG */
+    WMICON_GENERATED     /* generated letter tile (app has no usable icon) */
+} WMIconSource;
 
-/* Writes a PNG/XPM path to 'out' and says which rung found it. Returns WMICON_NONE (and an empty
- * string) only when nothing exists and the cache directory cannot be written. 'size' = wanted pixels. */
-WMIconSource wmicons_for_app(const WMApp *a, int size, char *out, size_t outlen);
-const char *wmicons_source_name(WMIconSource s);
-/* Extra highest-priority data dir (has an icons/ subdir), the same one given to wmapps_scan(). NULL = none. */
-void wmicons_set_dir(const char *dir);
+/* Search this extra data dir (it has an icons/ subdir) first, matching wmapps_scan()'s 'extra_dir'. NULL clears. */
+void wmicons_set_extra_dir(const char *dir);
 
-/* Low level: one icon name -> best file in the installed themes, no fallbacks and no conversion.
- * Returns 1 for png/xpm (loadable by Window Maker), 2 for svg-only (needs conversion), 0 if nothing. */
+/* Resolve one icon name or absolute path. Returns 1 for png/xpm (loadable by Window Maker),
+ * 2 for svg-only (convert it with wmicons_convert_svg), 0 if nothing found. 'size' = wanted pixels. */
 int wmicons_resolve(const char *icon, int size, char *out, size_t outlen);
+
+/* Render an SVG to a cached PNG of about size x size. Returns 1 and the path in 'out', or 0 when
+ * no converter is installed or it failed. Re-renders only if the SVG changed. */
+int wmicons_convert_svg(const char *svg, int size, char *out, size_t outlen);
+
+/* Generated tile, cached as XPM. 'key' picks the colour, 'label' supplies the initial. 1 on success. */
+int wmicons_generate(const char *key, const char *label, int size, char *out, size_t outlen);
+
+/* Best icon file for an app (see the pipeline above). *guessed (may be NULL) is set to 1 when the
+ * icon came from an alternative name rather than the Icon= value. */
+WMIconSource wmicons_for_app(const WMApp *a, int size, char *out, size_t outlen, int *guessed);
+
+const char *wmicons_source_name(WMIconSource s);   /* "file", "converted", "generated", "none" */
 #endif

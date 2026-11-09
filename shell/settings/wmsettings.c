@@ -27,6 +27,7 @@ static const Setting S[] = {
     { "animations","on",    "on|off", "DisableAnimations", "NO|YES" },
     { "dock",      "on",    "on|off", "DisableDock", "NO|YES" },
     { "terminal",  "xterm -e", "", NULL, NULL },          /* used by wmmenud for Terminal=true apps */
+    { "icon_theme", "",     "", NULL, NULL },             /* preferred icon theme for wmicons; "" = GTK's, then hicolor */
 };
 #define NS (sizeof S / sizeof *S)
 

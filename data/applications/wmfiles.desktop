@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+GenericName=File Browser
+Comment=Column-style file browser
+Exec=wmfiles %f
+Icon=wmfiles
+Terminal=false
+StartupWMClass=wmfiles
+Categories=System;FileManager;Utility;
+MimeType=inode/directory;
