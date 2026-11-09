@@ -174,4 +174,4 @@ Everything else consumes this; nothing else scans application directories.
 - A screenshot of a themed notification and `wmfiles` was looked at (Window Maker's default grey-blue menu colours).
 - Generated tiles and the `wmfiles` icon were rendered with ImageMagick/rsvg and looked at; I have **not** seen anything inside a running Window Maker (its XPM/PNG loaders and menu/defaults formats were checked by reading its source).
 - **Not tested:** every tool against a *running* Window Maker, `wmgfx` on real hardware (only fake `/sys` data), `wmsettings apply` (needs `wdwrite`), real application notification clients other than `gdbus`, action buttons and icons by real clicking (only rendering was checked by eye, not exercised by an app), non-Latin glyphs on a machine with CJK fonts, and input methods (XIM) in wmfiles.
-- License: MIT (see `LICENSE`). Reference projects keep their own terms (Window Maker is GPL-2.0-or-later); no code is copied from them.
+- License: MIT (see `LICENSE`). Reference projects keep their own terms (Window Maker is GPL-2.0-or-later).
