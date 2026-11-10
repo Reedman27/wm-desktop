@@ -9,6 +9,7 @@ cleanup() { for p in $PIDS; do kill "$p" 2>/dev/null; done; rm -rf "$T"; }
 trap cleanup EXIT
 
 # ---- no display needed ----
+export XDG_CACHE_HOME="$T/cache"
 export HOME=/nonexistent XDG_DATA_HOME=/nonexistent XDG_DATA_DIRS="$FIX/share" WMDOCK_APPDIR="$FIX/share" LANG=C
 build/wmdock state org.gnome.Calculator | grep -q 'Name = "gnome-calculator.Gnome-calculator"' || fail "dock state name"
 build/wmdock state org.gnome.Calculator | grep -q 'Command = "gnome-calculator"'              || fail "dock state command"
