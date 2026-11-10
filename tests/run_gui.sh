@@ -5,7 +5,7 @@
 cd "$(dirname "$0")/.."
 fail() { echo "FAIL: $1"; exit 1; }
 for c in Xvfb dbus-daemon gdbus; do command -v $c >/dev/null || { echo "SKIP: GUI tests (need $c)"; exit 0; }; done
-[ -x build/wmnotify ] || { echo "SKIP: GUI tests (wmnotify not built: needs libdbus headers)"; exit 0; }
+[ -x build/wmnotify ] && [ -x build/wmfiles ] || { echo "SKIP: GUI tests (wmnotify/wmfiles not built: need libdbus and Xft headers)"; exit 0; }
 T=$(mktemp -d); PIDS=""
 cleanup() { for p in $PIDS; do kill $p 2>/dev/null; done; [ -n "$BUSPID" ] && kill $BUSPID 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
@@ -16,7 +16,7 @@ export DISPLAY=$D
 BUS=$(dbus-daemon --session --fork --print-address=1 --print-pid=2 2>"$T/pid") || fail "cannot start a private session bus"
 BUSPID=$(cat "$T/pid"); export DBUS_SESSION_BUS_ADDRESS="$BUS"
 
-export HOME="$T/home" WMAKER_USER_ROOT="$T/gs" WMTHEME_GLOBAL=/nonexistent
+export HOME="$T/home" WMAKER_USER_ROOT="$T/gs" WMTHEME_GLOBAL=/nonexistent WMCONFIG_FILE="$T/wm.conf" WMNOTIFY_HISTORY="$T/notify-history"
 mkdir -p "$HOME" "$T/gs/Defaults"
 theme() {   # theme MENUBACK TITLEBACK TEXT TITLETEXT HIGHLIGHT
   cat > "$T/gs/Defaults/WindowMaker" <<EOT
@@ -86,6 +86,45 @@ $NB.Notify t "uint32 0" "" Normal "goes" "@as []" "@a{sv} {'urgency': <byte 1>}"
 sleep 1.5; [ "$($P find WMNotify | wc -l)" -eq 1 ] || fail "after the timeout only the critical popup should remain (got $($P find WMNotify | wc -l))"
 W=$($P find WMNotify | cut -d' ' -f1); $P click $W 20 10; sleep 0.3
 [ "$($P find WMNotify | wc -l)" -eq 0 ] || fail "click did not dismiss the critical popup"
+
+# action buttons: a real click on a button must emit ActionInvoked with its key, then close the pop-up
+gdbus monitor --session --dest org.freedesktop.Notifications > "$T/mon" 2>&1 & MP=$!; PIDS="$PIDS $MP"; sleep 0.5
+$NB.Notify t "uint32 0" "" Question "Proceed?" "['yes', 'Yes', 'no', 'No']" "@a{sv} {}" "int32 60000" | grep -q 'uint32' || fail "Notify with actions"
+sleep 0.4; set -- $($P find WMNotify); [ $# -eq 6 ] || fail "action popup missing: $*"
+AW=$1; AH=$6; $P click $AW 40 $((AH - 18)); sleep 0.6
+grep -q "ActionInvoked" "$T/mon" && grep -q "'yes'" "$T/mon" || fail "button click did not emit ActionInvoked(yes): $(cat "$T/mon")"
+[ "$($P find WMNotify | wc -l)" -eq 0 ] || fail "popup still open after an action"
+
+# hover pauses the timeout, leaving restarts it with a short grace period
+$NB.Notify t "uint32 0" "" Hover "stay while hovered" "@as []" "@a{sv} {}" "int32 1500" >/dev/null; sleep 0.4
+HW=$($P find WMNotify | cut -d' ' -f1); $P enter $HW; sleep 2.5
+[ "$($P find WMNotify | wc -l)" -eq 1 ] || fail "hovered popup expired"
+$P leave $HW; sleep 3.5
+[ "$($P find WMNotify | wc -l)" -eq 0 ] || fail "popup did not expire after the pointer left"
+
+# do-not-disturb and per-app rules: nothing pops up, everything is kept in the history; critical still shows
+printf 'notify_dnd = on\n' > "$WMCONFIG_FILE"
+$NB.Notify chatty "uint32 0" "" "While DND" "quiet" "@as []" "@a{sv} {}" "int32 60000" | grep -q 'uint32' || fail "Notify during DND must still return an id"
+sleep 0.4; [ "$($P find WMNotify | wc -l)" -eq 0 ] || fail "DND popup appeared"
+$NB.Notify chatty "uint32 0" "" "Critical in DND" "shows" "@as []" "@a{sv} {'urgency': <byte 2>}" "int32 0" >/dev/null
+sleep 0.4; [ "$($P find WMNotify | wc -l)" -eq 1 ] || fail "critical must show during DND"
+$P click $($P find WMNotify | cut -d' ' -f1) 20 10; sleep 0.3
+printf 'notify_dnd = off\nnotify_mute = noisy, other\nnotify_app_timeout = slowapp:60000\n' > "$WMCONFIG_FILE"
+$NB.Notify noisy "uint32 0" "" "Muted app" "x" "@as []" "@a{sv} {}" "int32 60000" >/dev/null
+sleep 0.4; [ "$($P find WMNotify | wc -l)" -eq 0 ] || fail "muted app popup appeared"
+$NB.Notify Noisy "uint32 0" "" "Muted app, other case" "x" "@as []" "@a{sv} {}" "int32 60000" >/dev/null
+sleep 0.3; [ "$($P find WMNotify | wc -l)" -eq 0 ] || fail "app mute is case-sensitive"
+$NB.Notify slowapp "uint32 0" "" "Slow" "per-app timeout" "@as []" "@a{sv} {}" "int32 -1" >/dev/null; sleep 0.3
+[ "$($P find WMNotify | wc -l)" -eq 1 ] || fail "unmuted app popup missing"
+sleep 5.5; [ "$($P find WMNotify | wc -l)" -eq 1 ] || fail "notify_app_timeout ignored (popup left after the 5 s default)"
+$NB.CloseNotification "uint32 $($NB.Notify slowapp "uint32 0" "" Tmp "" "@as []" "@a{sv} {}" "int32 100" | sed 's/[^0-9]//g')" >/dev/null 2>&1
+$P click $($P find WMNotify | head -1 | cut -d' ' -f1) 20 10; sleep 0.3; $P click $($P find WMNotify | head -1 | cut -d' ' -f1) 20 10 2>/dev/null; sleep 0.3
+: > "$WMCONFIG_FILE"
+build/wmnotify-send -H 30 > "$T/hist" || fail "wmnotify-send -H"
+grep -q "\[dnd\] chatty: While DND" "$T/hist"        || fail "history lacks the DND notification: $(cat "$T/hist")"
+grep -q "\[muted\] noisy: Muted app" "$T/hist"      || fail "history lacks the muted notification"
+grep -q "t: Question" "$T/hist"        || fail "history lacks a shown notification"
+
 build/wmnotify 2>/dev/null; [ $? -eq 1 ] || fail "second instance must refuse to start"
 kill -0 $NP 2>/dev/null || fail "wmnotify died"
 grep -qE "Sanitizer|runtime error" "$T/nerr" && fail "wmnotify sanitizer report: $(cat "$T/nerr")"

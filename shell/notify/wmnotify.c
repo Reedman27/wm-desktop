@@ -18,6 +18,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -32,7 +34,7 @@ typedef struct { char key[64], label[96]; int x, y, w, h; } Action;
 typedef struct {
     unsigned id; Window win; int w, h; long long expire;
     char app[64], summary[256], body[2048], icon[1024], entry[128];
-    int urgency, value, nact, hover;
+    int urgency, value, nact, hover, inside;
     Action act[MAXACT];
     Pixmap icon_pm; int icon_w, icon_h;
     char line[MAXLINE][256]; int nline;                 /* wrapped body */
@@ -231,16 +233,64 @@ static void close_note(unsigned id, unsigned reason) {
     }
 }
 
-typedef struct { const char *app, *icon, *summary, *body, *image_path, *entry; unsigned replaces; int timeout, urgency, value, nact; char act[MAXACT][2][96]; } Req;
+typedef struct Req_ { const char *app, *icon, *summary, *body, *image_path, *entry; unsigned replaces; int timeout, urgency, value, nact; char act[MAXACT][2][96]; } Req;
+static unsigned add_or_replace_shown(const Req *q);
+
+/* ---------- history, do-not-disturb, per-app rules ---------- */
+/* Every notification is appended to a small log (so a missed one can be read with `wmnotify-send -H`). */
+static void history_path(char *out, size_t n) {
+    const char *e = getenv("WMNOTIFY_HISTORY"), *x = getenv("XDG_STATE_HOME"), *h = getenv("HOME");
+    if (e && *e) snprintf(out, n, "%s", e);
+    else if (x && *x) snprintf(out, n, "%.3000s/wm-desktop/notify-history", x);
+    else snprintf(out, n, "%.3000s/.local/state/wm-desktop/notify-history", h ? h : "");
+}
+static void flat(char *dst, size_t n, const char *src) {         /* one TSV field: no tabs or newlines */
+    size_t j = 0; for (; *src && j + 1 < n; src++) dst[j++] = (*src == '\t' || *src == '\n' || *src == '\r') ? ' ' : *src; dst[j] = 0;
+}
+static void history_log(const Req *q, unsigned id, const char *state) {
+    char p[4096]; history_path(p, sizeof p); if (!p[0]) return;
+    char dir[4096]; snprintf(dir, sizeof dir, "%s", p); char *sl = strrchr(dir, '/');
+    if (sl) { *sl = 0; for (char *c = dir + 1; *c; c++) if (*c == '/') { *c = 0; mkdir(dir, 0700); *c = '/'; } mkdir(dir, 0700); }
+    struct stat st; if (!stat(p, &st) && st.st_size > 256 * 1024) {      /* keep the newest half */
+        FILE *f = fopen(p, "rb"); if (f) {
+            long keep = 128 * 1024; fseek(f, -keep, SEEK_END); char *buf = malloc((size_t)keep + 1);
+            if (buf) { size_t got = fread(buf, 1, (size_t)keep, f); buf[got] = 0; char *nl = memchr(buf, '\n', got);
+                fclose(f); f = fopen(p, "wb"); if (f) { if (nl) fwrite(nl + 1, 1, got - (size_t)(nl + 1 - buf), f); fclose(f); } free(buf); }
+            else fclose(f);
+        }
+    }
+    FILE *f = fopen(p, "ab"); if (!f) return;
+    char a[128], su[300], bo[1200]; flat(a, sizeof a, q->app); flat(su, sizeof su, q->summary); flat(bo, sizeof bo, q->body);
+    fprintf(f, "%lld\t%u\t%s\t%d\t%s\t%s\t%s\n", (long long)time(NULL), id, state, q->urgency, a, su, bo); fclose(f);
+}
+/* "a,b" list lookup, case-insensitive; with a ':' separator returns the number after "app:" */
+static int in_list(const char *list, const char *app, long *val) {
+    char buf[1024]; snprintf(buf, sizeof buf, "%s", list);
+    for (char *t = strtok(buf, ", "); t; t = strtok(NULL, ", ")) {
+        char *c = strchr(t, ':'); if (c) *c = 0;
+        if (!strcasecmp(t, app)) { if (val) *val = c ? atol(c + 1) : 0; return 1; }
+    }
+    return 0;
+}
+static int is_dnd(void) { const char *v = wmconfig_get("notify_dnd", "off"); return !strcmp(v, "on") || !strcmp(v, "1") || !strcmp(v, "yes"); }
 
 static unsigned add_or_replace(const Req *q) {
+    int replacing = 0; for (int i = 0; i < nn; i++) if (q->replaces && notes[i].id == q->replaces) replacing = 1;
+    if (!replacing && q->urgency != 2 && (is_dnd() || (q->app[0] && in_list(wmconfig_get("notify_mute", ""), q->app, NULL)))) {
+        unsigned id = q->replaces ? q->replaces : next_id++;                  /* kept quiet: history only, critical ones always show */
+        history_log(q, id, is_dnd() ? "dnd" : "muted"); emit("NotificationClosed", id, NULL, 4); return id;
+    }
+    unsigned id = add_or_replace_shown(q); history_log(q, id, "shown"); return id;
+}
+
+static unsigned add_or_replace_shown(const Req *q) {
     if (wmthemex_changed(&th)) { load_theme(); relayout_all(); }
     Note *n = NULL;
     for (int i = 0; i < nn; i++) if (q->replaces && notes[i].id == q->replaces) n = &notes[i];
     if (!n) {
         if (nn == MAXN) close_note(notes[0].id, 4);
         n = &notes[nn++]; memset(n, 0, sizeof *n); n->id = next_id++;
-        XSetWindowAttributes a; a.override_redirect = True; a.event_mask = ButtonPressMask | ExposureMask | PointerMotionMask | LeaveWindowMask; a.background_pixel = th.face;
+        XSetWindowAttributes a; a.override_redirect = True; a.event_mask = ButtonPressMask | ExposureMask | PointerMotionMask | LeaveWindowMask | EnterWindowMask; a.background_pixel = th.face;
         n->win = XCreateWindow(dpy, DefaultRootWindow(dpy), 0, 0, 340, 40, 0, CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect | CWEventMask | CWBackPixel, &a);
         XClassHint ch = { "wmnotify", "WMNotify" }; XSetClassHint(dpy, n->win, &ch); XStoreName(dpy, n->win, "wmnotify");
         XMapRaised(dpy, n->win);
@@ -253,7 +303,8 @@ static unsigned add_or_replace(const Req *q) {
     n->urgency = q->urgency; n->value = q->value; n->hover = -1; n->nact = q->nact;
     for (int i = 0; i < q->nact; i++) { snprintf(n->act[i].key, 64, "%s", q->act[i][0]); snprintf(n->act[i].label, 96, "%s", q->act[i][1]); }
     find_icon(n, q->image_path);
-    int to = q->timeout, def = atoi(wmconfig_get("notify_timeout", "5000"));
+    int to = q->timeout, def = atoi(wmconfig_get("notify_timeout", "5000")); long app_to;
+    if (q->app[0] && in_list(wmconfig_get("notify_app_timeout", ""), q->app, &app_to)) { if (to < 0 && app_to >= 0) to = (int)app_to; }   /* per-app rule: only when the client sent -1 */
     n->expire = (to == 0 || n->urgency == 2) ? 0 : now_ms() + (to < 0 ? (def > 0 ? def : 5000) : to);   /* critical stays until clicked */
     layout(n); place_all(); draw(n); XFlush(dpy);
     return n->id;
@@ -340,7 +391,9 @@ static int hit(const Note *n, int x, int y) {
 static void x_event(XEvent *ev) {
     Note *n = note_of(ev->xany.window); if (!n) return;
     if (ev->type == Expose) { if (ev->xexpose.count == 0) draw(n); }
+    else if (ev->type == EnterNotify) n->inside = 1;                 /* hovering pauses the timeout */
     else if (ev->type == MotionNotify || ev->type == LeaveNotify) {
+        if (ev->type == LeaveNotify) { n->inside = 0; if (n->expire) n->expire = now_ms() + 2000; }   /* a short grace period after leaving */
         int h = ev->type == LeaveNotify ? -1 : hit(n, ev->xmotion.x, ev->xmotion.y);
         if (h != n->hover) { n->hover = h; draw(n); }
     } else if (ev->type == ButtonPress) {
@@ -377,6 +430,6 @@ int main(void) {
         while (XPending(dpy)) { XEvent ev; XNextEvent(dpy, &ev); x_event(&ev); }
         if (nn && wmthemex_changed(&th)) { load_theme(); relayout_all(); }
         long long t = now_ms();
-        for (int i = 0; i < nn;) { if (notes[i].expire && notes[i].expire <= t) close_note(notes[i].id, 1); else i++; }
+        for (int i = 0; i < nn;) { if (notes[i].expire && !notes[i].inside && notes[i].expire <= t) close_note(notes[i].id, 1); else i++; }
     }
 }

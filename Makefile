@@ -82,7 +82,7 @@ build/test_wmapps: tests/test_wmapps.c $(APPS) $(MENU) $(WATCH) $(HDRS)
 
 install: all
 	install -d $(DESTDIR)$(PREFIX)/bin
-	install -m 755 $(BINS) $(DESTDIR)$(PREFIX)/bin/
+	install -m 755 $(BINS) tools/wm-autostart $(DESTDIR)$(PREFIX)/bin/
 	install -d $(DESTDIR)$(PREFIX)/share/applications
 	install -m 644 data/applications/*.desktop $(DESTDIR)$(PREFIX)/share/applications/
 	for d in scalable 48x48 64x64 128x128; do \

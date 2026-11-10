@@ -4,6 +4,7 @@
  *   xprobe pixel ID X Y          colour of one pixel as rrggbb
  *   xprobe count ID RRGGBB       how many pixels of that colour the window has
  *   xprobe click ID X Y          synthetic left click (press + release) at window coordinates
+ *   xprobe enter|leave ID        synthetic pointer enter / leave (hover)
  *   xprobe key ID KEYSYM         synthetic key press + release, e.g. Down, q, ctrl+c */
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -48,6 +49,11 @@ int main(int argc, char **argv) {
             XSendEvent(d, w, True, press ? ButtonPressMask : ButtonReleaseMask, &e);
         }
         XSync(d, False);
+    } else if (argc >= 3 && (!strcmp(argv[1], "enter") || !strcmp(argv[1], "leave"))) {
+        Window w = strtoul(argv[2], NULL, 0); XEvent e; memset(&e, 0, sizeof e); int in = !strcmp(argv[1], "enter");
+        e.xcrossing.type = in ? EnterNotify : LeaveNotify; e.xcrossing.window = w; e.xcrossing.root = DefaultRootWindow(d);
+        e.xcrossing.mode = NotifyNormal; e.xcrossing.detail = NotifyAncestor; e.xcrossing.same_screen = True;
+        XSendEvent(d, w, True, in ? EnterWindowMask : LeaveWindowMask, &e); XSync(d, False);
     } else if (!strcmp(argv[1], "key") && argc >= 4) {
         Window w = strtoul(argv[2], NULL, 0); const char *kn = argv[3]; unsigned mods = 0;
         if (!strncmp(kn, "ctrl+", 5)) { mods = ControlMask; kn += 5; }

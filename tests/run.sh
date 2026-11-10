@@ -112,3 +112,22 @@ rm -f "$AF"; $D apply-icons 2>/dev/null                                || fail "
 [ "$(grep -c ' = { Icon = ' "$AF")" -eq 4 ]                            || fail "apply-icons: new file entries"
 rm -rf "$A"; unset WMAKER_USER_ROOT WMDOCK_APPDIR
 echo "all apply-icons tests passed"
+
+# wm-autostart: idempotent, preserves the user's own lines, removable
+AS=$(mktemp -d); export WMAKER_USER_ROOT="$AS/gs"; mkdir -p "$AS/gs/Library/WindowMaker"
+printf '#!/bin/sh\npipewire &\nwmvol' > "$AS/gs/Library/WindowMaker/autostart"      # no trailing newline, on purpose
+sh tools/wm-autostart install >/dev/null                      || fail "autostart install"
+sh tools/wm-autostart install >/dev/null                      || fail "autostart install twice"
+A="$AS/gs/Library/WindowMaker/autostart"
+[ "$(grep -c '>>> wm-desktop' "$A")" = 1 ]                    || fail "autostart block duplicated"
+grep -qx 'wmvol' "$A" && grep -qx 'pipewire &' "$A"           || fail "autostart lost the user's lines"
+grep -q 'wmmenud' "$A" && grep -q 'wmnotify' "$A"             || fail "autostart missing our commands"
+[ -x "$A" ]                                                   || fail "autostart not executable"
+sh -n "$A"                                                    || fail "autostart is not valid sh"
+sh tools/wm-autostart install --no-notify >/dev/null; ! grep -q wmnotify "$A" || fail "--no-notify"
+sh tools/wm-autostart status >/dev/null                       || fail "autostart status"
+sh tools/wm-autostart remove >/dev/null
+[ "$(cat "$A")" = "$(printf '#!/bin/sh\npipewire &\nwmvol')" ] || fail "remove did not restore the user's file exactly: $(cat "$A")"
+ls "$AS/gs/Library/WindowMaker"/autostart.bak-* >/dev/null    || fail "no backup made"
+sh tools/wm-autostart status >/dev/null 2>&1 && fail "status after remove"
+rm -rf "$AS"; unset WMAKER_USER_ROOT

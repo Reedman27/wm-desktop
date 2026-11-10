@@ -39,7 +39,8 @@ export DISPLAY=$D
 
 build/wmdock watch > "$T/watch" & PIDS="$PIDS $!"; sleep 0.5
 build/fakewm gnome-calculator Gnome-calculator Calculator 1500 & sleep 0.5
-build/wmdock list | grep -q 'Gnome-calculator.org.gnome.Calculator.*Calculator' || fail "dock list match"
+ok=0; for i in 1 2 3 4 5 6 7 8 9 10; do build/wmdock list | grep -q 'Gnome-calculator.org.gnome.Calculator.*Calculator' && { ok=1; break; }; sleep 0.5; done
+[ $ok = 1 ] || fail "dock list match"
 sleep 2
 grep -q '^open.*org.gnome.Calculator' "$T/watch"  || fail "dock watch: open event"
 grep -q '^close.*org.gnome.Calculator' "$T/watch" || fail "dock watch: close event"

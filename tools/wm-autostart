@@ -1,0 +1,59 @@
+#!/bin/sh
+# wm-autostart - start wmmenud and wmnotify with Window Maker, without touching the rest of your autostart.
+#
+#   wm-autostart install [--no-menu] [--no-notify] [--dry-run]
+#   wm-autostart remove  [--dry-run]
+#   wm-autostart status
+#
+# Window Maker runs $WMAKER_USER_ROOT/Library/WindowMaker/autostart (default ~/GNUstep/...) at login. We keep
+# our lines between "# >>> wm-desktop" and "# <<< wm-desktop" markers: install replaces that block (so it is
+# safe to run again), remove deletes only that block, everything else is left byte for byte. The file is
+# backed up to autostart.bak-<time> before any change. The dock, wmvol and other dockapps are not touched.
+set -eu
+root=${WMAKER_USER_ROOT:-$HOME/GNUstep}
+case $root in "~"*) root=$HOME${root#"~"};; esac
+file=$root/Library/WindowMaker/autostart
+BEGIN='# >>> wm-desktop (managed by wm-autostart; edit outside these markers)'
+END='# <<< wm-desktop'
+cmd=${1:-}; [ $# -gt 0 ] && shift
+menu=1 notify=1 dry=0
+for a in "$@"; do case $a in
+    --no-menu) menu=0;; --no-notify) notify=0;; --dry-run) dry=1;;
+    *) echo "wm-autostart: unknown option $a" >&2; exit 2;;
+esac; done
+
+has_block() { [ -f "$file" ] && grep -qxF "$BEGIN" "$file"; }
+strip_block() {   # stdin -> stdout without our block
+    awk -v b="$BEGIN" -v e="$END" '$0==b{skip=1;next} $0==e{skip=0;next} !skip{print}'
+}
+block() {
+    echo "$BEGIN"
+    [ $menu = 1 ]   && echo 'command -v wmmenud >/dev/null 2>&1 && { pgrep -x wmmenud >/dev/null || wmmenud >/dev/null 2>&1 & }'
+    [ $notify = 1 ] && echo 'command -v wmnotify >/dev/null 2>&1 && { pgrep -x wmnotify >/dev/null || wmnotify >/dev/null 2>&1 & }'
+    echo "$END"
+}
+write_file() {   # $1 = new content file
+    if [ $dry = 1 ]; then echo "would write $file:"; cat "$1"; return; fi
+    mkdir -p "$(dirname "$file")"
+    [ -f "$file" ] && cp -p "$file" "$file.bak-$(date +%Y%m%d%H%M%S)"
+    cat "$1" > "$file"; chmod u+x "$file"
+    echo "updated $file"
+}
+
+case $cmd in
+install)
+    tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+    if [ -f "$file" ]; then strip_block < "$file" > "$tmp"; else echo '#!/bin/sh' > "$tmp"; fi
+    # an existing file that ends without a newline must not glue our marker onto its last line
+    [ -s "$tmp" ] && [ "$(tail -c1 "$tmp" | wc -c)" = 1 ] && [ -n "$(tail -c1 "$tmp" | tr -d '\n')" ] && echo >> "$tmp"
+    block >> "$tmp"
+    write_file "$tmp";;
+remove)
+    has_block || { echo "nothing to remove: no wm-desktop block in $file"; exit 0; }
+    tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+    strip_block < "$file" > "$tmp"; write_file "$tmp";;
+status)
+    if has_block; then echo "installed in $file:"; sed -n "/^$(printf '%s' "$BEGIN" | sed 's/[][\.*^$/]/\\&/g')\$/,/^# <<< wm-desktop\$/p" "$file"
+    else echo "not installed ($file)"; exit 1; fi;;
+*) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2;;
+esac

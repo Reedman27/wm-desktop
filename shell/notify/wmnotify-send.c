@@ -3,6 +3,7 @@
  *   wmnotify-send [-a app] [-i icon] [-u low|normal|critical] [-t ms] [-r id] [-p]
  *                 [-v 0..100] [-A key=label]... [-e desktop-entry] [-w] summary [body]
  * -p prints the id (use it with -r to update the same pop-up, e.g. a volume or brightness bar with -v).
+ *   wmnotify-send -H [count]      print the last notifications wmnotify received (default 20), also hidden ones
  * -w waits (up to 60 s) for the pop-up to be closed or an action picked, and prints "key" or "closed:<reason>". */
 #include <dbus/dbus.h>
 #include <stdio.h>
@@ -23,7 +24,30 @@ static void hint_int(DBusMessageIter *dict, const char *k, int type, const char 
     dbus_message_iter_close_container(&e, &var); dbus_message_iter_close_container(dict, &e);
 }
 
+static int history(int count) {
+    const char *e = getenv("WMNOTIFY_HISTORY"), *x = getenv("XDG_STATE_HOME"), *h = getenv("HOME"); char p[4096];
+    if (e && *e) snprintf(p, sizeof p, "%s", e);
+    else if (x && *x) snprintf(p, sizeof p, "%.3000s/wm-desktop/notify-history", x);
+    else snprintf(p, sizeof p, "%.3000s/.local/state/wm-desktop/notify-history", h ? h : "");
+    FILE *f = fopen(p, "r"); if (!f) { fprintf(stderr, "wmnotify-send: no history yet (%s)\n", p); return 1; }
+    if (count < 1) count = 20;
+    char **ring = calloc((size_t)count, sizeof *ring); size_t cap = 0; char *line = NULL; int n = 0;
+    while (getline(&line, &cap, f) > 0) { free(ring[n % count]); ring[n % count] = strdup(line); n++; }
+    free(line); fclose(f);
+    for (int k = n > count ? n - count : 0; k < n; k++) {
+        char *l = ring[k % count]; l[strcspn(l, "\n")] = 0;
+        char *fld[7]; int nf = 0; for (char *t = l; nf < 7; ) { fld[nf++] = t; char *tab = strchr(t, '\t'); if (!tab) break; *tab = 0; t = tab + 1; }
+        if (nf < 7) continue;
+        time_t ts = (time_t)atoll(fld[0]); char when[32]; strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&ts));
+        printf("%s  #%s  %s%s%s%s%s%s\n", when, fld[1], strcmp(fld[2], "shown") ? "[" : "", strcmp(fld[2], "shown") ? fld[2] : "", strcmp(fld[2], "shown") ? "] " : "", fld[4], *fld[4] ? ": " : "", fld[5]);
+        if (*fld[6]) printf("    %s\n", fld[6]);
+    }
+    for (int k = 0; k < count; k++) free(ring[k]);
+    free(ring); return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "-H")) return history(argc > 2 ? atoi(argv[2]) : 20);
     const char *app = "wmnotify-send", *icon = "", *entry = NULL, *keys[8], *labels[8]; int nact = 0, timeout = -1, urgency = 1, value = -1, print = 0, wait = 0;
     unsigned replaces = 0; int i;
     for (i = 1; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {

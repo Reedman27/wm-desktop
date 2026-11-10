@@ -73,7 +73,7 @@ and flags icons found under a guessed name. No app is left without one.
     wmsettings set icon_theme Papirus       # which icon theme wins (else GTK's theme, then hicolor)
     wmsettings apply [--dry-run]            # writes them into Window Maker via its own `wdwrite`
 `apply` needs Window Maker's `wdwrite` in your PATH; restart Window Maker (or use WPrefs' Reload) to see
-changes. Nine keys only; WPrefs remains the full configuration tool.
+changes. Twelve keys only; WPrefs remains the full configuration tool.
 
 ### 5. wmnotify — desktop notifications
     wmnotify &            # needs a D-Bus session bus (dbus-launch or your login session provides one)
