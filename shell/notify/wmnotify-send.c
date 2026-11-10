@@ -4,8 +4,10 @@
  *                 [-v 0..100] [-A key=label]... [-e desktop-entry] [-w] summary [body]
  * -p prints the id (use it with -r to update the same pop-up, e.g. a volume or brightness bar with -v).
  *   wmnotify-send -H [count]      print the last notifications wmnotify received (default 20), also hidden ones
+ *   -R key=command   run a shell command when that action is picked (implies -w; exit status is the command's)
  * -w waits (up to 60 s) for the pop-up to be closed or an action picked, and prints "key" or "closed:<reason>". */
 #include <dbus/dbus.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,7 +50,7 @@ static int history(int count) {
 
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "-H")) return history(argc > 2 ? atoi(argv[2]) : 20);
-    const char *app = "wmnotify-send", *icon = "", *entry = NULL, *keys[8], *labels[8]; int nact = 0, timeout = -1, urgency = 1, value = -1, print = 0, wait = 0;
+    const char *app = "wmnotify-send", *icon = "", *entry = NULL, *keys[8], *labels[8]; const char *rkeys[8], *rcmds[8]; int nrun = 0; int nact = 0, timeout = -1, urgency = 1, value = -1, print = 0, wait = 0;
     unsigned replaces = 0; int i;
     for (i = 1; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
         char o = argv[i][1]; if (o == 'p') { print = 1; continue; } if (o == 'w') { wait = 1; continue; }
@@ -58,6 +60,7 @@ int main(int argc, char **argv) {
         case 'a': app = v; break; case 'i': icon = v; break; case 'e': entry = v; break;
         case 't': timeout = atoi(v); break; case 'r': replaces = (unsigned)atoi(v); break; case 'v': value = atoi(v); break;
         case 'u': urgency = !strcmp(v, "low") ? 0 : !strcmp(v, "critical") ? 2 : 1; break;
+        case 'R': { char *eq = strchr(v, '='); if (nrun < 8 && eq) { *eq = 0; rkeys[nrun] = v; rcmds[nrun++] = eq + 1; wait = 1; } else { fputs("wmnotify-send: -R wants key=command\n", stderr); return 2; } break; }
         case 'A': { char *eq = strchr(v, '='); if (nact < 8 && eq) { *eq = 0; keys[nact] = v; labels[nact++] = eq + 1; } else { fputs("wmnotify-send: -A wants key=label\n", stderr); return 2; } break; }
         default: fprintf(stderr, "wmnotify-send: unknown option -%c\n", o); return 2;
         }
@@ -94,7 +97,9 @@ int main(int argc, char **argv) {
             while ((s = dbus_connection_pop_message(c))) {
                 dbus_uint32_t sid = 0; const char *key = NULL; dbus_uint32_t reason = 0;
                 if (dbus_message_is_signal(s, "org.freedesktop.Notifications", "ActionInvoked") &&
-                    dbus_message_get_args(s, NULL, DBUS_TYPE_UINT32, &sid, DBUS_TYPE_STRING, &key, DBUS_TYPE_INVALID) && sid == id) { puts(key); return 0; }
+                    dbus_message_get_args(s, NULL, DBUS_TYPE_UINT32, &sid, DBUS_TYPE_STRING, &key, DBUS_TYPE_INVALID) && sid == id) { puts(key); fflush(stdout);
+                    for (int r2 = 0; r2 < nrun; r2++) if (!strcmp(rkeys[r2], key)) { int st = system(rcmds[r2]); return st == -1 ? 1 : (WIFEXITED(st) ? WEXITSTATUS(st) : 1); }
+                    return 0; }
                 if (dbus_message_is_signal(s, "org.freedesktop.Notifications", "NotificationClosed") &&
                     dbus_message_get_args(s, NULL, DBUS_TYPE_UINT32, &sid, DBUS_TYPE_UINT32, &reason, DBUS_TYPE_INVALID) && sid == id) { printf("closed:%u\n", reason); return 0; }
                 dbus_message_unref(s);

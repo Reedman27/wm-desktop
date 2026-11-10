@@ -95,6 +95,13 @@ AW=$1; AH=$6; $P click $AW 40 $((AH - 18)); sleep 0.6
 grep -q "ActionInvoked" "$T/mon" && grep -q "'yes'" "$T/mon" || fail "button click did not emit ActionInvoked(yes): $(cat "$T/mon")"
 [ "$($P find WMNotify | wc -l)" -eq 0 ] || fail "popup still open after an action"
 
+# wmnotify-send -R: picking the action runs the command, and the exit status is the command's
+rm -f "$T/ran"
+build/wmnotify-send -a runner -A go=Go -R "go=touch $T/ran; exit 7" "Run it" "click Go" > "$T/runout" 2>&1 & RP=$!
+sleep 1; set -- $($P find WMNotify); [ $# -eq 6 ] || fail "-R popup missing: $*"
+$P click $1 40 $(($6 - 18)); wait $RP; RC=$?
+[ -f "$T/ran" ] && [ "$RC" -eq 7 ] && grep -q '^go$' "$T/runout" || fail "wmnotify-send -R (ran=$([ -f "$T/ran" ] && echo yes || echo no) rc=$RC out=$(cat "$T/runout"))"
+
 # hover pauses the timeout, leaving restarts it with a short grace period
 $NB.Notify t "uint32 0" "" Hover "stay while hovered" "@as []" "@a{sv} {}" "int32 1500" >/dev/null; sleep 0.4
 HW=$($P find WMNotify | cut -d' ' -f1); $P enter $HW; sleep 2.5

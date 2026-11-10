@@ -23,6 +23,21 @@ build/wmsettings set focus bogus 2>/dev/null && fail "settings accepted bad choi
 [ "$(build/wmsettings get focus)" = "sloppy" ]                    || fail "settings get"
 build/wmsettings set notify_corner bottom-left && [ "$(build/wmsettings get notify_corner)" = "bottom-left" ] || fail "notify_corner setting"
 build/wmsettings set notify_corner middle 2>/dev/null && fail "notify_corner accepted a bad value"
+# wmnotifyctl (shell front end for the notify settings)
+if [ -x build/wmnotify-send ]; then
+  CT="env PATH=$PWD/build:$PATH WMCONFIG_FILE=$T/ctl.conf WMNOTIFY_HISTORY=$T/ctl-history sh tools/wmnotifyctl"
+  [ "$($CT dnd status)" = "do not disturb: off" ]                          || fail "wmnotifyctl dnd default"
+  [ "$($CT dnd toggle)" = "do not disturb: on" ] && [ "$($CT dnd status)" = "do not disturb: on" ] || fail "wmnotifyctl dnd toggle"
+  $CT dnd off >/dev/null; [ "$($CT dnd status)" = "do not disturb: off" ] || fail "wmnotifyctl dnd off"
+  $CT mute Slack >/dev/null; $CT mute discord >/dev/null; $CT mute slack >/dev/null
+  [ "$($CT muted | paste -sd, -)" = "discord,slack" ] || fail "wmnotifyctl mute list (re-muting must not duplicate): $($CT muted | paste -sd, -)"
+  $CT unmute SLACK >/dev/null; [ "$($CT muted)" = "discord" ]              || fail "wmnotifyctl unmute is case-insensitive"
+  $CT unmute discord >/dev/null; [ -z "$($CT muted)" ]                     || fail "wmnotifyctl unmute last one"
+  $CT mute "a b" 2>/dev/null && fail "wmnotifyctl accepted a name with a space"
+  $CT bogus >/dev/null 2>&1 && fail "wmnotifyctl accepted an unknown command"
+  printf '1\t1\tshown\t1\tapp\tsum\tbody\n' > "$T/ctl-history"; $CT history 5 | grep -q "app: sum" || fail "wmnotifyctl history"
+  $CT clear-history >/dev/null; [ ! -s "$T/ctl-history" ] || fail "wmnotifyctl clear-history"
+fi
 build/wmsettings apply --dry-run | grep -q 'FocusMode Sloppy'     || fail "settings -> FocusMode"
 build/wmsettings apply --dry-run | grep -q 'DisableAnimations YES' || fail "settings inverted bool"
 printf '# keep me\nterminal = foot -e\n' > "$WMCONFIG_FILE"; build/wmsettings set focus click

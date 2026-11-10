@@ -1,0 +1,44 @@
+#!/bin/sh
+# wmnotifyctl - control wmnotify without remembering the setting names.
+#
+#   wmnotifyctl dnd [on|off|toggle|status]   do not disturb (critical notifications still show)
+#   wmnotifyctl mute APP | unmute APP        never pop up for that application
+#   wmnotifyctl muted                        list muted applications
+#   wmnotifyctl history [COUNT]              recent notifications, including hidden ones
+#   wmnotifyctl clear-history                forget them
+#   wmnotifyctl test                         show a test notification
+#
+# Settings go through wmsettings, so they apply to the next notification; no restart needed.
+set -eu
+here=$(dirname "$0")
+tool() { if [ -x "$here/$1" ]; then echo "$here/$1"; else command -v "$1" || { echo "wmnotifyctl: $1 not found" >&2; exit 1; }; fi; }
+WS=$(tool wmsettings)
+get() { "$WS" get "$1" 2>/dev/null || true; }
+set_() { "$WS" set "$1" "$2" >/dev/null; }
+is_on() { case $(get notify_dnd) in on|1|yes) return 0;; esac; return 1; }
+cmd=${1:-}; [ $# -gt 0 ] && shift
+case $cmd in
+dnd)
+    case ${1:-status} in
+        on) set_ notify_dnd on; echo "do not disturb: on";;
+        off) set_ notify_dnd off; echo "do not disturb: off";;
+        toggle) if is_on; then set_ notify_dnd off; echo "do not disturb: off"; else set_ notify_dnd on; echo "do not disturb: on"; fi;;
+        status) if is_on; then echo "do not disturb: on"; else echo "do not disturb: off"; fi;;
+        *) echo "wmnotifyctl: dnd takes on, off, toggle or status" >&2; exit 2;;
+    esac;;
+mute|unmute)
+    [ $# -ge 1 ] || { echo "wmnotifyctl: $cmd needs an application name" >&2; exit 2; }
+    app=$1; case $app in *[,\ ]*) echo "wmnotifyctl: application names cannot contain commas or spaces" >&2; exit 2;; esac
+    cur=$(get notify_mute | tr ',' '\n' | tr -d ' ' | grep -v '^$' || true)
+    new=$(printf '%s\n' "$cur" | grep -vxiF -- "$app" || true)
+    [ "$cmd" = mute ] && new=$(printf '%s\n%s\n' "$new" "$app")
+    new=$(printf '%s\n' "$new" | grep -v '^$' | paste -sd, - || true)
+    set_ notify_mute "$new"; echo "muted: ${new:-(none)}";;
+muted) get notify_mute | tr ',' '\n' | tr -d ' ' | grep -v '^$' || true;;
+history) exec "$(tool wmnotify-send)" -H "${1:-20}";;
+clear-history)
+    p=${WMNOTIFY_HISTORY:-${XDG_STATE_HOME:-$HOME/.local/state}/wm-desktop/notify-history}
+    : > "$p" 2>/dev/null || true; echo "history cleared";;
+test) exec "$(tool wmnotify-send)" -a wmnotifyctl "Test notification" "wmnotify is running and following your Window Maker theme";;
+*) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2;;
+esac
