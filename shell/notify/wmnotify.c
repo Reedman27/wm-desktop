@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <ctype.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -37,7 +38,7 @@ typedef struct {
     int urgency, value, nact, hover, inside;
     Action act[MAXACT];
     Pixmap icon_pm; int icon_w, icon_h;
-    char line[MAXLINE][256]; int nline;                 /* wrapped body */
+    char line[MAXLINE][256]; int line_st[MAXLINE]; int nline;                 /* wrapped body */
     int title_h, text_x, text_y, bar_y;
 } Note;
 
@@ -58,23 +59,26 @@ static int load_theme(void) { return wmthemex_load(dpy, &th, NULL, NULL); }
 /* ---------- text helpers (UTF-8 aware) ---------- */
 static int char_len(const char *s) { unsigned char c = (unsigned char)*s; return c < 0x80 ? 1 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1; }
 
-/* Longest prefix of s[0..len) that fits in maxw pixels, cut at a character boundary (at least one char). */
-static int fit(XftFont *f, const char *s, int len, int maxw) {
-    int i = 0, last = 0;
-    while (i < len) {
-        int cl = char_len(s + i); if (i + cl > len) cl = len - i;
-        if (TW(f, s, i + cl) > maxw) break;
-        i += cl; last = i;
-    }
-    return last ? last : (len ? char_len(s) : 0);
+/* Markup: <b>/<strong>, <i>/<em>, <u> and <a> become zero-width control bytes 1..6 inside the text
+ * (bold on/off, italic on/off, underline on/off); every other tag is dropped, &entities; are decoded. */
+enum { ST_BOLD = 1, ST_ITALIC = 2, ST_UNDERLINE = 4 };
+static int st_apply(int st, unsigned char c) {
+    switch (c) { case 1: return st | ST_BOLD; case 2: return st & ~ST_BOLD; case 3: return st | ST_ITALIC; case 4: return st & ~ST_ITALIC;
+                 case 5: return st | ST_UNDERLINE; case 6: return st & ~ST_UNDERLINE; }
+    return st;
 }
-
-static void strip_markup(char *s) {
+static void strip_markup(char *s, int styled) {
     char *w = s;
     for (char *r = s; *r;) {
+        if ((unsigned char)*r < 7) { r++; continue; }                            /* sender-supplied control bytes are never ours */
         if (*r == '<') {
-            if (!strncasecmp(r, "<br", 3)) *w++ = '\n';
             char *e = strchr(r, '>'); if (!e) { *w++ = *r++; continue; }
+            const char *t = r + 1; int close = *t == '/'; if (close) t++;
+            char name[8]; size_t k = 0; while (k < sizeof name - 1 && isalpha((unsigned char)t[k])) { name[k] = (char)tolower((unsigned char)t[k]); k++; } name[k] = 0;
+            if (!strcmp(name, "br")) *w++ = '\n';
+            else if (styled && (!strcmp(name, "b") || !strcmp(name, "strong"))) *w++ = close ? 2 : 1;
+            else if (styled && (!strcmp(name, "i") || !strcmp(name, "em"))) *w++ = close ? 4 : 3;
+            else if (styled && (!strcmp(name, "u") || !strcmp(name, "a"))) *w++ = close ? 6 : 5;
             r = e + 1;
         } else if (*r == '&') {
             static const struct { const char *ent; char ch; } E[] = { {"&amp;", '&'}, {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'}, {"&apos;", '\''} };
@@ -86,25 +90,65 @@ static void strip_markup(char *s) {
     *w = 0;
 }
 
+/* bold / italic variants of the theme's body font, opened on demand and dropped when the theme font changes */
+static XftFont *vfont[4], *vbase;
+static XftFont *font_for(int st) {
+    int v = (st & ST_BOLD ? 1 : 0) | (st & ST_ITALIC ? 2 : 0);
+    if (!v) return th.font;
+    if (vbase != th.font) { for (int i = 1; i < 4; i++) vfont[i] = NULL; vbase = th.font; }   /* the old font (and its variants) were closed by the theme reload */
+    if (!vfont[v]) {
+        FcPattern *p = FcPatternDuplicate(th.font->pattern);
+        if (p) {
+            if (v & 1) { FcPatternDel(p, FC_WEIGHT); FcPatternAddInteger(p, FC_WEIGHT, FC_WEIGHT_BOLD); }
+            if (v & 2) { FcPatternDel(p, FC_SLANT); FcPatternAddInteger(p, FC_SLANT, FC_SLANT_ITALIC); }
+            FcResult res; FcPattern *m = XftFontMatch(dpy, DefaultScreen(dpy), p, &res);
+            if (m) { vfont[v] = XftFontOpenPattern(dpy, m); if (!vfont[v]) FcPatternDestroy(m); }
+            FcPatternDestroy(p);
+        }
+        if (!vfont[v]) vfont[v] = th.font;                                       /* no such face: draw it plain */
+    }
+    return vfont[v];
+}
+
+/* Pixel width of s[0..len) which starts in style st; control bytes are zero-width and switch fonts. */
+static int swidth(const char *s, int len, int st) {
+    int w = 0; const char *run = s;
+    for (int i = 0; i < len; i++) if ((unsigned char)s[i] < 7) { w += TW(font_for(st), run, (int)(s + i - run)); st = st_apply(st, (unsigned char)s[i]); run = s + i + 1; }
+    return w + TW(font_for(st), run, (int)(s + len - run));
+}
+
+/* Longest prefix of s[0..len) that fits in maxw pixels, cut at a character boundary (at least one char). */
+static int sfit(const char *s, int len, int maxw, int st) {
+    int i = 0, last = 0;
+    while (i < len) {
+        int cl = char_len(s + i); if (i + cl > len) cl = len - i;
+        if (swidth(s, i + cl, st) > maxw) break;
+        i += cl; last = i;
+    }
+    return last ? last : (len ? char_len(s) : 0);
+}
+
 static void wrap(Note *n, int maxw) {
-    n->nline = 0; const char *p = n->body; int more = 0;
+    n->nline = 0; const char *p = n->body; int more = 0, st = 0;
     while (*p) {
         if (n->nline == MAXLINE) { more = 1; break; }
         while (*p == ' ') p++;
         const char *nl = strchr(p, '\n'); int seg = nl ? (int)(nl - p) : (int)strlen(p);
-        if (seg == 0) { if (!nl) break; n->line[n->nline++][0] = 0; p = nl + 1; continue; }
-        int take = fit(th.font, p, seg, maxw);
+        if (seg == 0) { if (!nl) break; n->line_st[n->nline] = st; n->line[n->nline++][0] = 0; p = nl + 1; continue; }
+        int take = sfit(p, seg, maxw, st);
         if (take < seg) {                                                        /* prefer a word boundary */
             int b = take; while (b > 0 && p[b] != ' ') b--;
             if (b > 0) take = b;
         }
+        if (take < 1) take = 1;
         if (take > 250) take = 250;
-        memcpy(n->line[n->nline], p, (size_t)take); n->line[n->nline][take] = 0; n->nline++;
+        memcpy(n->line[n->nline], p, (size_t)take); n->line[n->nline][take] = 0; n->line_st[n->nline] = st; n->nline++;
+        for (int i = 0; i < take; i++) st = st_apply(st, (unsigned char)p[i]);
         p += take; if (*p == '\n') p++;
     }
     if (more && n->nline) {                                                      /* ellipsis on the last kept line */
         char *l = n->line[n->nline - 1]; size_t len = strlen(l);
-        while (len && TW(th.font, l, (int)len) > maxw - 14) { len--; while (len && ((unsigned char)l[len] & 0xC0) == 0x80) len--; }
+        while (len && swidth(l, (int)len, n->line_st[n->nline - 1]) > maxw - 14) { len--; while (len && ((unsigned char)l[len] & 0xC0) == 0x80) len--; }
         l[len] = 0; strncat(l, "\xE2\x80\xA6", 4);
     }
 }
@@ -181,8 +225,22 @@ static void draw(Note *n) {
     if (TW(th.title_font, t, len) > maxw) { while (len > 0 && TW(th.title_font, t, len) > maxw - 12) { len--; while (len && ((unsigned char)t[len] & 0xC0) == 0x80) len--; } t[len] = 0; strncat(t, "\xE2\x80\xA6", 4); len = (int)strlen(t); }
     XftDrawStringUtf8(d, crit ? &th.xhi_text : &th.xtitle_text, th.title_font, bw + 8, bw + (n->title_h - wmx_font_height(th.title_font)) / 2 + th.title_font->ascent, (const FcChar8 *)t, len);
     if (n->icon_pm) XCopyArea(dpy, n->icon_pm, n->win, gc, 0, 0, (unsigned)n->icon_w, (unsigned)n->icon_h, bw + 8, n->text_y);
-    for (int i = 0; i < n->nline; i++)
-        XftDrawStringUtf8(d, &th.xtext, th.font, n->text_x, n->text_y + i * (fh + 2) + th.font->ascent, (const FcChar8 *)n->line[i], (int)strlen(n->line[i]));
+    for (int i = 0; i < n->nline; i++) {                    /* a line is a series of runs, each in its own bold/italic font */
+        const char *l = n->line[i]; int len = (int)strlen(l), st = n->line_st[i], x = n->text_x, y = n->text_y + i * (fh + 2);
+        const char *run = l;
+        for (int k = 0; k <= len; k++) {
+            if (k < len && (unsigned char)l[k] >= 7) continue;
+            int rl = (int)(l + k - run);
+            if (rl > 0) {
+                XftFont *f = font_for(st); int rw = TW(f, run, rl);
+                XftDrawStringUtf8(d, &th.xtext, f, x, y + th.font->ascent, (const FcChar8 *)run, rl);
+                if (st & ST_UNDERLINE) { XSetForeground(dpy, gc, th.text); XDrawLine(dpy, n->win, gc, x, y + th.font->ascent + 1, x + rw - 1, y + th.font->ascent + 1); }
+                x += rw;
+            }
+            if (k < len) st = st_apply(st, (unsigned char)l[k]);
+            run = l + k + 1;
+        }
+    }
     if (n->bar_y >= 0) {                                    /* progress: outline + fill in the text colour, always legible */
         int x = bw + 8, w = inner - 16, fill = (w - 4) * n->value / 100;
         XSetForeground(dpy, gc, th.text); XDrawRectangle(dpy, n->win, gc, x, n->bar_y, (unsigned)w - 1, 9);
@@ -299,7 +357,7 @@ static unsigned add_or_replace_shown(const Req *q) {
     snprintf(n->app, sizeof n->app, "%s", q->app); snprintf(n->summary, sizeof n->summary, "%s", q->summary);
     snprintf(n->body, sizeof n->body, "%s", q->body); snprintf(n->icon, sizeof n->icon, "%s", q->icon);
     snprintf(n->entry, sizeof n->entry, "%s", q->entry ? q->entry : "");
-    strip_markup(n->summary); strip_markup(n->body);
+    strip_markup(n->summary, 0); strip_markup(n->body, 1);
     n->urgency = q->urgency; n->value = q->value; n->hover = -1; n->nact = q->nact;
     for (int i = 0; i < q->nact; i++) { snprintf(n->act[i].key, 64, "%s", q->act[i][0]); snprintf(n->act[i].label, 96, "%s", q->act[i][1]); }
     find_icon(n, q->image_path);

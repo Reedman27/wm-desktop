@@ -25,8 +25,8 @@ WITH_NOTIFY ?= auto
 WITH_FILES ?= auto
 
 # Xft (antialiased UTF-8 text) is required by wmnotify and wmfiles, as it is by Window Maker itself.
-XFT_CFLAGS := $(shell $(PKG_CONFIG) --cflags xft 2>/dev/null)
-XFT_LIBS := $(shell $(PKG_CONFIG) --libs xft 2>/dev/null)
+XFT_CFLAGS := $(shell $(PKG_CONFIG) --cflags xft fontconfig 2>/dev/null)
+XFT_LIBS := $(shell $(PKG_CONFIG) --libs xft fontconfig 2>/dev/null)
 ifneq ($(WITH_WRASTER),no)
 WR_CFLAGS := $(shell $(PKG_CONFIG) --cflags wrlib 2>/dev/null)
 WR_LIBS := $(shell $(PKG_CONFIG) --libs wrlib 2>/dev/null)

@@ -102,6 +102,23 @@ sleep 1; set -- $($P find WMNotify); [ $# -eq 6 ] || fail "-R popup missing: $*"
 $P click $1 40 $(($6 - 18)); wait $RP; RC=$?
 [ -f "$T/ran" ] && [ "$RC" -eq 7 ] && grep -q '^go$' "$T/runout" || fail "wmnotify-send -R (ran=$([ -f "$T/ran" ] && echo yes || echo no) rc=$RC out=$(cat "$T/runout"))"
 
+# markup: <b>/<i>/<u> are styles, other tags vanish, hostile control bytes are ignored; underline adds a solid line
+tc() { $NB.Notify mk "uint32 0" "" "Markup" "$1" "@as []" "@a{sv} {}" "int32 60000" >/dev/null; sleep 0.4
+       W=$($P find WMNotify | tail -1 | cut -d' ' -f1); $P count $W "${2:-ffff00}"; }
+for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+theme "#336699" "rgb:aa/00/00" "#ffff00" "#ffffff" "#00ff00"; bump; sleep 1.2
+PLAIN=$(tc "WWWWWWWW"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+UNDER=$(tc "<u>WWWWWWWW</u>"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+BOLD=$(tc "<b>WWWWWWWW</b>"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+[ "$UNDER" -gt "$PLAIN" ] || fail "underline did not add pixels (plain $PLAIN, underlined $UNDER)"
+[ "$BOLD" -ge "$PLAIN" ] || fail "bold is lighter than plain (plain $PLAIN, bold $BOLD)"
+MARK=$(tc "<span class='x'>WWWWWWWW</span><img src=x/>"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+[ "$MARK" = "$PLAIN" ] || fail "unknown tags changed the rendering ($MARK vs $PLAIN)"
+HOST=$(tc "$(printf 'WWWW\001WWWW')"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+[ "$HOST" = "$PLAIN" ] || fail "a raw control byte in the body changed the rendering ($HOST vs $PLAIN)"
+kill -0 $NP 2>/dev/null || fail "wmnotify died on markup"
+
 # hover pauses the timeout, leaving restarts it with a short grace period
 $NB.Notify t "uint32 0" "" Hover "stay while hovered" "@as []" "@a{sv} {}" "int32 1500" >/dev/null; sleep 0.4
 HW=$($P find WMNotify | cut -d' ' -f1); $P enter $HW; sleep 2.5
