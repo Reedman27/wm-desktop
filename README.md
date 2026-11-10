@@ -85,8 +85,13 @@ signals). Pop-ups stack in a corner; click the body to dismiss (or invoke the `d
 invoke it. `critical` ones never expire. They are drawn like a Window Maker menu: a title bar with the summary, the
 body underneath, with the app's icon, antialiased UTF-8 text (markup tags are stripped, not rendered) and a progress
 bar for `value`; critical ones use the highlight colours. Icons come from the hint, else the app's registry icon.
-Settings (`wmsettings set`): `notify_corner` (top-right, top-left, bottom-right, bottom-left) and `notify_timeout`
-(ms, default 5000). At most 8 are shown; the oldest is closed. Only one notification daemon can own the bus name.
+Hovering a pop-up pauses its timeout; it closes 2 s after the pointer leaves.
+Settings (`wmsettings set`, applied to the next notification): `notify_corner` (top-right, top-left, bottom-right,
+bottom-left), `notify_timeout` (ms, default 5000), `notify_dnd on` (do not disturb: nothing pops up, critical ones
+still do), `notify_mute "app1,app2"` (those apps never pop up; names are case-insensitive) and
+`notify_app_timeout "app:ms,app:ms"` (default timeout for an app whose notifications don't set one).
+Everything wmnotify receives, hidden or not, is appended to `~/.local/state/wm-desktop/notify-history`
+(trimmed at 256 KB); read it with `wmnotify-send -H [count]`. At most 8 are shown; the oldest is closed. Only one notification daemon can own the bus name.
 Wrongly typed calls get a D-Bus `InvalidArgs` error.
 
 `wmnotify-send` is a small notify-send replacement for scripts: `-a app -i icon -u low|normal|critical -t ms
@@ -95,11 +100,12 @@ Wrongly typed calls get a D-Bus `InvalidArgs` error.
 ### 6. wmfiles — column file browser
     wmfiles [directory]
 Ships `data/applications/wmfiles.desktop` and an icon (SVG + 48/64/128 px PNG), installed by `make install`, so it
-appears in the generated menu and Dock like any other app. Click a folder to open its next column; double-click a file to open it with `xdg-open` (or `$WMFILES_OPENER`).
+appears in the generated menu and Dock like any other app. It follows the disk (inotify): files created or removed elsewhere show up on their own. Click a folder to open its next column; double-click a file to open it with `xdg-open` (or `$WMFILES_OPENER`).
 Keys: Up/Down select, Right enter, Left back, `h` hidden files, `q` quit; wheel scrolls.
 File operations (never overwrite, never follow symlinks; copies keep symlinks as links): `Delete` moves to the XDG
 trash (with a `.trashinfo`, so file managers can restore it), `n` new folder, `F2` rename, `Ctrl+C` / `Ctrl+X` /
-`Ctrl+V` copy / cut / paste into the active column's folder. Names are typed in a bar at the bottom (Return
+`Ctrl+V` copy / cut / paste into the active column's folder, `Ctrl+Z` undo (rename, new folder, copy, move, trash;
+32 steps), `t` toggles the trash view where `r` restores the selected item to where it came from. Names are typed in a bar at the bottom (Return
 accepts, Escape cancels); errors appear in the same bar. Wears your Window Maker theme (below): path bar = menu
 title bar, columns = menu body, selected row = highlight colour.
 
@@ -123,6 +129,12 @@ back to their colour. Fonts are Xft, so fontconfig names such as `Sans:bold:pixe
 Bevels are derived from the face colours rather than copied from Window Maker's own renderer, so it looks like a
 Window Maker menu, not pixel-identical to one.
 
+### Autostart
+    wm-autostart install [--no-menu] [--no-notify] [--dry-run]    # start wmmenud and wmnotify with Window Maker
+    wm-autostart status | remove
+Edits `~/GNUstep/Library/WindowMaker/autostart` (or under `$WMAKER_USER_ROOT`) between marker comments, backs the
+file up first, and leaves every other line alone, so your own entries (dockapps, wmvol, pipewire) stay as they are.
+
 ### 7. wmgfx — tear-free X11 setup
     wmgfx detect                 # GPU drivers found in /sys/class/drm and the chosen primary
     wmgfx picom                  # print a picom.conf (glx + vsync) tuned for that driver
@@ -130,6 +142,10 @@ Window Maker menu, not pixel-identical to one.
     wmgfx apply --system         # also write /etc/X11/xorg.conf.d/20-wm-desktop-gpu.conf (run as root)
     wmgfx autostart              # prints: picom --daemon  (put it in your autostart)
 Needs picom installed separately. Window Maker has no compositor of its own; this makes picom's vsync work with it.
+
+## Development
+GitHub Actions (`.github/workflows/ci.yml`) runs `make check` and `make sanitize`, plus variants built without
+libwraster, without libdbus and without Xft, to keep the optional-dependency paths compiling.
 
 ## Internals
 
@@ -169,9 +185,9 @@ Everything else consumes this; nothing else scans application directories.
 - Icons: scaled (`@2x`) directories are ignored; the generated tile supports Latin letters and digits only (anything else shows `#`); SVG rendering needs one of the converters above, otherwise such apps get the generated tile.
 
 ## Verification status (honest)
-- `make check` passes, also under `make sanitize` (ASan + UBSan): 93 WMApps, 35 WMIcons, 83 WMTheme and 40 file-operation unit checks, shell suites (including `wmdock apply-icons` on a scratch `WMAKER_USER_ROOT`), dock window matching against a fake EWMH window manager, and GUI tests.
+- `make check` passes, also under `make sanitize` (ASan + UBSan): 93 WMApps, 35 WMIcons, 83 WMTheme and 48 file-operation unit checks, shell suites (including `wmdock apply-icons` on a scratch `WMAKER_USER_ROOT`), dock window matching against a fake EWMH window manager, and GUI tests.
 - **GUI tests** (`tests/run_gui.sh`) run `wmnotify` and `wmfiles` under Xvfb with a private D-Bus session bus (no window manager), send real notifications through `gdbus`, and read pixels back with `tests/xprobe.c` to prove the title bar, body, selection and text are drawn in the colours of a fixture theme file and that changing the file changes the next draw. They also cover gradient rendering, live restyling, replace-id, close, expiry, critical urgency, click-to-dismiss, the single-instance guard, `wmfiles` double-click opening and its trash/new folder/rename/copy/cut/paste keys. They SKIP when Xvfb, dbus-daemon, gdbus or a built `wmnotify` is missing.
 - A screenshot of a themed notification and `wmfiles` was looked at (Window Maker's default grey-blue menu colours).
 - Generated tiles and the `wmfiles` icon were rendered with ImageMagick/rsvg and looked at; I have **not** seen anything inside a running Window Maker (its XPM/PNG loaders and menu/defaults formats were checked by reading its source).
-- **Not tested:** every tool against a *running* Window Maker, `wmgfx` on real hardware (only fake `/sys` data), `wmsettings apply` (needs `wdwrite`), real application notification clients other than `gdbus`, action buttons and icons by real clicking (only rendering was checked by eye, not exercised by an app), non-Latin glyphs on a machine with CJK fonts, and input methods (XIM) in wmfiles.
+- **Not tested:** every tool against a *running* Window Maker, `wmgfx` on real hardware (only fake `/sys` data), `wmsettings apply` (needs `wdwrite`), real application notification clients other than `gdbus`, non-Latin glyphs on a machine with CJK fonts, and input methods (XIM) in wmfiles.
 - License: MIT (see `LICENSE`). Reference projects keep their own terms (Window Maker is GPL-2.0-or-later).

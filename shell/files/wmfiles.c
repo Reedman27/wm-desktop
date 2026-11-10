@@ -9,6 +9,9 @@
  * File operations (core/files/wmfileops.h - never overwrite, never follow symlinks):
  *   Delete  move to the XDG trash (restorable)      n   new folder        F2  rename
  *   Ctrl+C / Ctrl+X / Ctrl+V  copy / cut / paste into the active column's folder
+ *   Ctrl+Z  undo the last operation (rename, new folder, copy, move, trash - up to 32 steps)
+ *   t       switch to the trash and back; in the trash, r restores the selected item to where it came from
+ * The columns follow the disk: a change made elsewhere (a download finishing, another program) shows up on its own.
  * Names are typed in a bar at the bottom: Return accepts, Escape cancels. Errors show in the same bar.
  * Colours, textures (any gradient) and Xft fonts come from the active Window Maker theme: title bar =
  * MenuTitleBack/Color/Font, body = MenuTextBack/Color/Font, selection = Highlight*. Re-read when it changes. */
@@ -20,6 +23,8 @@
 #include <X11/keysym.h>
 #include <dirent.h>
 #include <limits.h>
+#include <poll.h>
+#include <sys/inotify.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +50,11 @@ static int active;                 /* column that keyboard navigation acts on */
 static long long last_click_ms; static int last_col = -1, last_row = -1;
 static int mode = M_NONE; static char input[512], msg[512]; static int msg_err;
 static char clip[PATH_MAX]; static int clip_cut;
+enum { U_RENAME, U_MKDIR, U_TRASH, U_COPY, U_MOVE };
+typedef struct { int type; char a[PATH_MAX], b[PATH_MAX]; } Undo;      /* a = where it was, b = where it is now */
+static Undo undo[32]; static int nundo;
+static char home_dir[PATH_MAX]; static int in_trash;
+static int ifd = -1, wd[MAXCOL + 1], nwd; static char watched[PATH_MAX * 4];
 static Pixmap tex_body, tex_title; static int tex_w, tex_h, tex_dirty = 1;
 
 static long long now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000LL + t.tv_nsec / 1000000; }
@@ -52,6 +62,15 @@ static int cmp(const void *a, const void *b) {
     const Entry *x = a, *y = b; if (x->dir != y->dir) return y->dir - x->dir; return strcasecmp(x->name, y->name);
 }
 static void say(int err, const char *fmt, const char *a) { char b[300]; snprintf(b, sizeof b, "%.290s", a ? a : ""); msg_err = err; snprintf(msg, sizeof msg, fmt, b); }
+
+static void push_undo(int type, const char *a, const char *b) {
+    if (nundo == 32) { memmove(&undo[0], &undo[1], 31 * sizeof undo[0]); nundo--; }
+    undo[nundo].type = type; snprintf(undo[nundo].a, PATH_MAX, "%.4000s", a ? a : ""); snprintf(undo[nundo].b, PATH_MAX, "%.4000s", b ? b : ""); nundo++;
+}
+static void trash_files_dir(char *out, size_t n) {
+    const char *xd = getenv("XDG_DATA_HOME"), *h = getenv("HOME");
+    if (xd && *xd) snprintf(out, n, "%.4000s/Trash/files", xd); else snprintf(out, n, "%.4000s/.local/share/Trash/files", h ? h : "");
+}
 
 static void free_col(Column *c) { for (int i = 0; i < c->n; i++) free(c->e[i].name); free(c->e); c->e = NULL; c->n = 0; }
 
@@ -101,6 +120,20 @@ static void reload_all(const char *select_name) {
         }
     }
     if (active >= depth) active = depth - 1;
+}
+
+/* Watch every visible column's folder; re-armed only when the set of folders changes. */
+static void rewatch(void) {
+    if (ifd < 0) return;
+    char now[sizeof watched]; size_t k = 0; now[0] = 0;
+    for (int i = 0; i < depth; i++) { int w = snprintf(now + k, sizeof now - k, "%.4000s\n", col[i].path); if (w < 0 || (size_t)w >= sizeof now - k) break; k += (size_t)w; }
+    if (!strcmp(now, watched)) return;
+    for (int i = 0; i < nwd; i++) inotify_rm_watch(ifd, wd[i]);
+    nwd = 0; snprintf(watched, sizeof watched, "%s", now);
+    for (int i = 0; i < depth && nwd < MAXCOL; i++) {
+        int w = inotify_add_watch(ifd, col[i].path, IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_CLOSE_WRITE | IN_ATTRIB);
+        if (w >= 0) wd[nwd++] = w;
+    }
 }
 
 static void keep_visible(Column *c) {
@@ -213,7 +246,9 @@ static const char *base(const char *p) { const char *s = strrchr(p, '/'); return
 static void do_trash(void) {
     char p[PATH_MAX * 2]; if (!selected_path(p, sizeof p)) return;
     int keep = cur()->sel;
-    if (wmfo_trash(p)) { say(1, "Cannot trash: %s", wmfo_error()); return; }
+    char tp[PATH_MAX * 2];
+    if (wmfo_trash_to(p, tp, sizeof tp)) { say(1, "Cannot trash: %s", wmfo_error()); return; }
+    push_undo(U_TRASH, p, tp);
     say(0, "Moved to trash: %s", base(p));
     reload_all(NULL); Column *c = cur();
     if (c->n) { int r = keep < c->n ? keep : c->n - 1; select_row(active, r); keep_visible(&col[active]); }
@@ -224,6 +259,7 @@ static void do_paste(void) {
     char out[PATH_MAX * 2];
     int r = clip_cut ? wmfo_move(clip, cur()->path, out, sizeof out) : wmfo_copy(clip, cur()->path, out, sizeof out);
     if (r) { say(1, clip_cut ? "Cannot move: %s" : "Cannot copy: %s", wmfo_error()); return; }
+    push_undo(clip_cut ? U_MOVE : U_COPY, clip, out);
     say(0, clip_cut ? "Moved: %s" : "Copied: %s", base(out)); if (clip_cut) clip[0] = 0;
     reload_all(base(out));
     Column *c = cur(); if (c->sel >= 0) { select_row(active, c->sel); keep_visible(c); }
@@ -240,14 +276,49 @@ static void commit_input(void) {
     if (!input[0]) return;
     if (m == M_NEWDIR) {
         if (wmfo_mkdir(cur()->path, input, out, sizeof out)) { say(1, "Cannot create folder: %s", wmfo_error()); return; }
-        say(0, "Created: %s", base(out));
+        push_undo(U_MKDIR, NULL, out); say(0, "Created: %s", base(out));
     } else {
         if (!selected_path(p, sizeof p)) return;
         if (wmfo_rename(p, input, out, sizeof out)) { say(1, "Cannot rename: %s", wmfo_error()); return; }
-        say(0, "Renamed to: %s", base(out));
+        push_undo(U_RENAME, p, out); say(0, "Renamed to: %s", base(out));
     }
     reload_all(base(out));
     Column *c = cur(); if (c->sel >= 0) { select_row(active, c->sel); keep_visible(c); }
+}
+
+static void do_undo(void) {
+    if (!nundo) { say(1, "Nothing to undo", NULL); return; }
+    Undo u = undo[nundo - 1]; char out[PATH_MAX * 2] = ""; int r = 0; const char *what = "";
+    char dir[PATH_MAX]; snprintf(dir, sizeof dir, "%s", u.a); char *sl = strrchr(dir, '/'); if (sl) *(sl == dir ? sl + 1 : sl) = 0;
+    switch (u.type) {
+    case U_RENAME: what = "Renamed back"; r = wmfo_rename(u.b, base(u.a), out, sizeof out); break;
+    case U_MKDIR:  what = "Removed new folder"; r = rmdir(u.b) ? (snprintf(out, sizeof out, "%s", u.b), -2) : 0; break;
+    case U_TRASH:  what = "Restored"; r = wmfo_restore(u.b, out, sizeof out); break;
+    case U_COPY:   what = "Removed copy"; r = wmfo_trash(u.b); break;
+    case U_MOVE:   what = "Moved back"; r = wmfo_move(u.b, dir, out, sizeof out); break;
+    }
+    if (r) { if (r == -2) say(1, "Cannot undo, folder is not empty: %s", base(u.b)); else say(1, "Cannot undo: %s", wmfo_error()); return; }
+    nundo--; say(0, "Undone - %s", what);
+    reload_all(out[0] ? base(out) : NULL);
+    Column *c = cur(); if (c->sel >= 0) { select_row(active, c->sel); keep_visible(c); }
+}
+
+static void toggle_trash(void) {
+    char t[PATH_MAX]; trash_files_dir(t, sizeof t);
+    const char *dest = in_trash ? home_dir : t;
+    for (int i = 0; i < depth; i++) free_col(&col[i]);
+    if (load(&col[0], dest)) { say(1, "Cannot open: %s", dest); load(&col[0], home_dir); in_trash = 0; } else in_trash = !in_trash;
+    depth = 1; active = 0; last_col = -1;
+    say(0, in_trash ? "Trash - r restores the selected item, Delete is not offered here" : "Back to %s", in_trash ? NULL : home_dir);
+}
+
+static void restore_selected(void) {
+    char p[PATH_MAX * 2], out[PATH_MAX * 2];
+    if (!in_trash || active != 0) { say(1, "Restore works on items directly inside the trash (press t)", NULL); return; }
+    if (!selected_path(p, sizeof p)) return;
+    if (wmfo_restore(p, out, sizeof out)) { say(1, "Cannot restore: %s", wmfo_error()); return; }
+    say(0, "Restored to: %s", out); reload_all(NULL);
+    Column *c = cur(); if (c->n) { int r = c->sel < c->n ? (c->sel < 0 ? 0 : c->sel) : c->n - 1; select_row(0, r); }
 }
 
 static void input_key(KeySym ks, const char *buf, int n) {
@@ -270,8 +341,11 @@ static void key(XKeyEvent *ke) {
     Column *c = cur(); char p[PATH_MAX * 2];
     if (ctrl && (ks == XK_c || ks == XK_x)) { if (selected_path(p, sizeof p)) { snprintf(clip, sizeof clip, "%.4000s", p); clip_cut = ks == XK_x; say(0, clip_cut ? "Cut: %s" : "Copied to clipboard: %s", base(p)); } return; }
     if (ctrl && ks == XK_v) { do_paste(); return; }
+    if (ctrl && ks == XK_z) { do_undo(); return; }
+    if (ks == XK_t) { toggle_trash(); return; }
+    if (ks == XK_r) { restore_selected(); return; }
     if (ks == XK_q) exit(0);
-    else if (ks == XK_Delete || ks == XK_KP_Delete) do_trash();
+    else if (ks == XK_Delete || ks == XK_KP_Delete) { if (in_trash) say(1, "Already in the trash; use r to restore", NULL); else do_trash(); }
     else if (ks == XK_n) begin_input(M_NEWDIR);
     else if (ks == XK_F2) begin_input(M_RENAME);
     else if (ks == XK_h) {
@@ -300,23 +374,34 @@ int main(int argc, char **argv) {
     XIM xim = XOpenIM(dpy, NULL, NULL, NULL);
     if (xim) xic = XCreateIC(xim, XNInputStyle, XIMPreeditNothing | XIMStatusNothing, XNClientWindow, win, XNFocusWindow, win, NULL);
     XMapWindow(dpy, win);
+    snprintf(home_dir, sizeof home_dir, "%s", start);
     load(&col[0], start); depth = 1;
+    ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    long long last_ino = 0; int pending = 0;
     for (;;) {
-        XEvent ev; XNextEvent(dpy, &ev);
-        if (XFilterEvent(&ev, None)) continue;
-        switch (ev.type) {
-        case Expose: if (ev.xexpose.count == 0) redraw(); break;
-        case ConfigureNotify: width = ev.xconfigure.width; height = ev.xconfigure.height; redraw(); break;
-        case ButtonPress: {
-            int cw = width / VISIBLE, ci = first_visible() + ev.xbutton.x / cw;
-            if (ev.xbutton.button == 1) click(ev.xbutton.x, ev.xbutton.y);
-            else if ((ev.xbutton.button == 4 || ev.xbutton.button == 5) && ci < depth) {
-                Column *c = &col[ci]; int mx = c->n - ROWS; if (mx < 0) mx = 0;
-                c->scroll += ev.xbutton.button == 4 ? -3 : 3; if (c->scroll < 0) c->scroll = 0; if (c->scroll > mx) c->scroll = mx;
+        while (XPending(dpy)) {
+            XEvent ev; XNextEvent(dpy, &ev);
+            if (XFilterEvent(&ev, None)) continue;
+            switch (ev.type) {
+            case Expose: if (ev.xexpose.count == 0) redraw(); break;
+            case ConfigureNotify: width = ev.xconfigure.width; height = ev.xconfigure.height; redraw(); break;
+            case ButtonPress: {
+                int cw = width / VISIBLE, ci = first_visible() + ev.xbutton.x / cw;
+                if (ev.xbutton.button == 1) click(ev.xbutton.x, ev.xbutton.y);
+                else if ((ev.xbutton.button == 4 || ev.xbutton.button == 5) && ci < depth) {
+                    Column *c = &col[ci]; int mx = c->n - ROWS; if (mx < 0) mx = 0;
+                    c->scroll += ev.xbutton.button == 4 ? -3 : 3; if (c->scroll < 0) c->scroll = 0; if (c->scroll > mx) c->scroll = mx;
+                }
+                redraw(); break; }
+            case KeyPress: key(&ev.xkey); redraw(); break;
+            case ClientMessage: if ((Atom)ev.xclient.data.l[0] == del) return 0; break;
             }
-            redraw(); break; }
-        case KeyPress: key(&ev.xkey); redraw(); break;
-        case ClientMessage: if ((Atom)ev.xclient.data.l[0] == del) return 0; break;
         }
+        rewatch();
+        struct pollfd p[2] = { { ConnectionNumber(dpy), POLLIN, 0 }, { ifd, POLLIN, 0 } };
+        poll(p, ifd >= 0 ? 2 : 1, pending ? 150 : 1000);       /* wakes for X, for the disk, and each second for a theme change */
+        if (ifd >= 0 && (p[1].revents & POLLIN)) { char buf[4096]; while (read(ifd, buf, sizeof buf) > 0) {} pending = 1; last_ino = now_ms(); }
+        if (pending && now_ms() - last_ino >= 150) { pending = 0; reload_all(NULL); redraw(); }
+        else if (wmthemex_changed(&th)) redraw();
     }
 }

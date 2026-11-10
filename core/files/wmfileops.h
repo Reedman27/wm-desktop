@@ -14,4 +14,8 @@ int wmfo_move(const char *src, const char *dstdir, char *out, size_t n);       /
 /* Moves to the XDG trash ($XDG_DATA_HOME/Trash or ~/.local/share/Trash) with a .trashinfo so file managers
  * can restore it. Refuses "/", $HOME and anything that contains the trash itself. */
 int wmfo_trash(const char *path);
+/* Same, and tells where it ended up (inside Trash/files) so the move can be undone with wmfo_restore. */
+int wmfo_trash_to(const char *path, char *out, size_t n);
+/* Moves a trashed file back to its recorded origin (a free name if taken); removes its .trashinfo. */
+int wmfo_restore(const char *trashed, char *out, size_t n);
 #endif

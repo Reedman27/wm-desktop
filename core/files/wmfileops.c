@@ -2,6 +2,7 @@
 #define _DEFAULT_SOURCE
 #include "wmfileops.h"
 #include <dirent.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -171,7 +172,7 @@ static int mkpath(const char *path) {
     return mkdir(b, 0700) && errno != EEXIST ? -1 : 0;
 }
 
-int wmfo_trash(const char *path) {
+int wmfo_trash_to(const char *path, char *out, size_t on) {
     char abs[PATH_MAX], root[PATH_MAX - 16], files[PATH_MAX], info[PATH_MAX];
     struct stat st; if (lstat(path, &st)) return fail("cannot stat", path, errno);
     if (!realpath(path, abs)) { snprintf(abs, sizeof abs, "%s", path); }          /* dangling symlink: use as is */
@@ -192,11 +193,44 @@ int wmfo_trash(const char *path) {
     if (fd < 0) return fail("trash name clash", path, 0);
     char enc[PATH_MAX * 3]; pct(abs, enc, sizeof enc); time_t t = time(NULL); struct tm tm; localtime_r(&t, &tm); char date[32]; strftime(date, sizeof date, "%Y-%m-%dT%H:%M:%S", &tm);
     dprintf(fd, "[Trash Info]\nPath=%s\nDeletionDate=%s\n", enc, date); close(fd);
-    if (!rename(path, tpath)) return 0;
+    if (!rename(path, tpath)) { if (out) snprintf(out, on, "%s", tpath); return 0; }
     int e = errno;
     if (e == EXDEV) {
-        if (copy_tree(path, tpath, 0) == 0 && rm_tree(path, 0) == 0) return 0;
+        if (copy_tree(path, tpath, 0) == 0 && rm_tree(path, 0) == 0) { if (out) snprintf(out, on, "%s", tpath); return 0; }
         rm_tree(tpath, 0); unlink(ipath); return -1;
     }
     unlink(ipath); return fail("cannot move to trash", path, e);
+}
+
+int wmfo_trash(const char *path) { return wmfo_trash_to(path, NULL, 0); }
+
+static int unpct(const char *s, char *out, size_t n) {
+    size_t k = 0;
+    while (*s && k + 1 < n) {
+        if (*s == '%' && isxdigit((unsigned char)s[1]) && isxdigit((unsigned char)s[2])) { char h[3] = { s[1], s[2], 0 }; out[k++] = (char)strtol(h, NULL, 16); s += 3; }
+        else out[k++] = *s++;
+    }
+    out[k] = 0; return 0;
+}
+
+/* Puts a file that wmfo_trash_to() returned back where it came from (a free name if that one is taken). */
+int wmfo_restore(const char *trashed, char *out, size_t n) {
+    char dir[PATH_MAX], info[PATH_MAX + NAME_MAX + 32], line[PATH_MAX * 3], orig[PATH_MAX] = "";
+    snprintf(dir, sizeof dir, "%s", trashed); char *sl = strrchr(dir, '/'); if (!sl) return fail("not a trash path", trashed, 0);
+    *sl = 0; sl = strrchr(dir, '/'); if (!sl || strcmp(sl, "/files")) return fail("not inside a Trash/files folder", trashed, 0);
+    *sl = 0; snprintf(info, sizeof info, "%s/info/%s.trashinfo", dir, base(trashed));
+    FILE *f = fopen(info, "r"); if (!f) return fail("no .trashinfo for", trashed, errno);
+    while (fgets(line, sizeof line, f)) if (!strncmp(line, "Path=", 5)) { line[strcspn(line, "\r\n")] = 0; unpct(line + 5, orig, sizeof orig); }
+    fclose(f);
+    if (orig[0] != '/') return fail("the .trashinfo has no usable Path for", trashed, 0);
+    char pdir[PATH_MAX]; snprintf(pdir, sizeof pdir, "%s", orig); sl = strrchr(pdir, '/'); *(sl == pdir ? sl + 1 : sl) = 0;
+    struct stat st; if (stat(pdir, &st) || !S_ISDIR(st.st_mode)) return fail("the original folder is gone:", pdir, 0);
+    char name[NAME_MAX + 64], dst[PATH_MAX * 2]; wmfo_unique(pdir, base(orig), name, sizeof name);
+    snprintf(dst, sizeof dst, "%s/%s", strcmp(pdir, "/") ? pdir : "", name);
+    if (rename(trashed, dst)) {
+        if (errno != EXDEV) return fail("cannot restore", trashed, errno);
+        if (copy_tree(trashed, dst, 0) || rm_tree(trashed, 0)) { rm_tree(dst, 0); return -1; }
+    }
+    unlink(info); if (out) snprintf(out, n, "%s", dst);
+    return 0;
 }

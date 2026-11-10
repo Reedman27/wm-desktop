@@ -177,6 +177,27 @@ k Down Down ctrl+c Up Right ctrl+v                             # copy beta.txt i
 [ -f "$FO/zdir/beta.txt" ] && [ -f "$FO/beta.txt" ] || fail "copy/paste failed"
 k Left Down ctrl+x Up Up Right ctrl+v                          # cut beta.txt, paste into xy
 [ -f "$FO/xy/beta.txt" ] && [ ! -e "$FO/beta.txt" ] || fail "cut/paste failed"
+# undo walks back through the operations above: move, copy, rename, new folder, trash
+k ctrl+z; [ -f "$FO/beta.txt" ] && [ ! -e "$FO/xy/beta.txt" ] || fail "undo of cut/paste"
+k ctrl+z; [ ! -e "$FO/zdir/beta.txt" ] || fail "undo of copy"
+k ctrl+z; [ -d "$FO/new" ] && [ ! -e "$FO/xy" ] || fail "undo of rename"
+k ctrl+z; [ ! -e "$FO/new" ] || fail "undo of new folder"
+k ctrl+z; [ -f "$FO/alpha.txt" ] && [ ! -e "$T/xdg/Trash/files/alpha.txt" ] || fail "undo of trash"
+k ctrl+z; kill -0 $FP 2>/dev/null || fail "undo with an empty history crashed wmfiles"
+
+# the columns follow the disk: files created behind its back appear without any key press
+BEFORE=$($P count $F ffff00)
+for i in 1 2 3 4 5; do : > "$FO/external-file-number-$i.txt"; done; sleep 1.2
+AFTER=$($P count $F ffff00); [ "$AFTER" -gt "$BEFORE" ] || fail "wmfiles did not notice new files (text pixels $BEFORE -> $AFTER)"
+
+# trash view: t switches, r restores to the original place, t goes back
+: > "$FO/gamma.txt"; sleep 1
+k Up Up Up Up Up Up Up Up Up Up Up Up Up Up Up Down Down Down Down Down Down Down Down Down   # zdir, alpha, beta, external x5, gamma
+k Delete; [ ! -e "$FO/gamma.txt" ] && [ -f "$T/xdg/Trash/files/gamma.txt" ] || fail "gamma.txt not trashed"
+k t Up Up Up Down r
+[ -f "$FO/gamma.txt" ] && [ ! -e "$T/xdg/Trash/files/gamma.txt" ] || fail "r in the trash view did not restore gamma.txt"
+[ ! -e "$T/xdg/Trash/info/gamma.txt.trashinfo" ] || fail "restore left the .trashinfo behind"
+k t; kill -0 $FP 2>/dev/null || fail "wmfiles died in the trash view: $(cat "$T/ferr2")"
 kill -0 $FP 2>/dev/null || fail "wmfiles died during file operations: $(cat "$T/ferr2")"
 grep -qE "Sanitizer|runtime error" "$T/ferr2" && fail "wmfiles ops sanitizer report"
 echo "ok: wmfiles"

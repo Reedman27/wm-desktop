@@ -72,6 +72,18 @@ int main(void) {
     CHECK(wmfo_trash(P("dangling")) == 0 && !has("dangling"));                                                                        /* dangling link */
     setenv("XDG_DATA_HOME", P("xdg"), 1); put("x2.txt", "x"); CHECK(wmfo_trash(P("x2.txt")) == 0 && has("xdg/Trash/files/x2.txt"));       /* honours XDG_DATA_HOME */
 
+    /* undo support: trash remembers where it went, restore puts it back (and picks a free name on a clash) */
+    { char t[1024], o[1024];
+      put("r me&.txt", "hi"); CHECK(wmfo_trash_to(P("r me&.txt"), t, sizeof t) == 0 && !has("r me&.txt"));
+      CHECK(wmfo_restore(t, o, sizeof o) == 0 && has("r me&.txt") && !strcmp(o, P("r me&.txt")));
+      CHECK(wmfo_restore(t, o, sizeof o) == -1);                                                    /* already restored */
+      CHECK(wmfo_trash_to(P("r me&.txt"), t, sizeof t) == 0); put("r me&.txt", "new");
+      CHECK(wmfo_restore(t, o, sizeof o) == 0 && has("r me&.txt") && has("r me&.txt") && strcmp(o, P("r me&.txt")) != 0);   /* original name taken */
+      sh("mkdir '%s/gone'", root); sh("echo x > '%s/gone/f'", root);
+      CHECK(wmfo_trash_to(P("gone/f"), t, sizeof t) == 0); sh("rm -rf '%s/gone'", root);
+      CHECK(wmfo_restore(t, o, sizeof o) == -1 && strstr(wmfo_error(), "gone"));                    /* origin folder missing: refuses, keeps the file */
+      CHECK(wmfo_restore("/etc/hostname", o, sizeof o) == -1); }
+
     sh("rm -rf '%s'", root);
     if (failures) { fprintf(stderr, "%d of %d file-op checks FAILED\n", failures, checks); return 1; }
     printf("all %d file-op unit checks passed\n", checks);
