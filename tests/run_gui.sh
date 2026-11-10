@@ -105,17 +105,17 @@ $P click $1 40 $(($6 - 18)); wait $RP; RC=$?
 # markup: <b>/<i>/<u> are styles, other tags vanish, hostile control bytes are ignored; underline adds a solid line
 tc() { $NB.Notify mk "uint32 0" "" "Markup" "$1" "@as []" "@a{sv} {}" "int32 60000" >/dev/null; sleep 0.4
        W=$($P find WMNotify | tail -1 | cut -d' ' -f1); $P count $W "${2:-ffff00}"; }
-for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
-for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10 2>/dev/null; done; sleep 0.3
+for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10 2>/dev/null; done; sleep 0.3
 theme "#336699" "rgb:aa/00/00" "#ffff00" "#ffffff" "#00ff00"; bump; sleep 1.2
-PLAIN=$(tc "WWWWWWWW"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
-UNDER=$(tc "<u>WWWWWWWW</u>"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
-BOLD=$(tc "<b>WWWWWWWW</b>"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+PLAIN=$(tc "WWWWWWWW"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10 2>/dev/null; done; sleep 0.3
+UNDER=$(tc "<u>WWWWWWWW</u>"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10 2>/dev/null; done; sleep 0.3
+BOLD=$(tc "<b>WWWWWWWW</b>"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10 2>/dev/null; done; sleep 0.3
 [ "$UNDER" -gt "$PLAIN" ] || fail "underline did not add pixels (plain $PLAIN, underlined $UNDER)"
 [ "$BOLD" -ge "$PLAIN" ] || fail "bold is lighter than plain (plain $PLAIN, bold $BOLD)"
-MARK=$(tc "<span class='x'>WWWWWWWW</span><img src=x/>"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+MARK=$(tc "<span class='x'>WWWWWWWW</span><img src=x/>"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10 2>/dev/null; done; sleep 0.3
 [ "$MARK" = "$PLAIN" ] || fail "unknown tags changed the rendering ($MARK vs $PLAIN)"
-HOST=$(tc "$(printf 'WWWW\001WWWW')"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10; done; sleep 0.3
+HOST=$(tc "$(printf 'WWWW\001WWWW')"); for w in $($P find WMNotify | cut -d' ' -f1); do $P click $w 20 10 2>/dev/null; done; sleep 0.3
 [ "$HOST" = "$PLAIN" ] || fail "a raw control byte in the body changed the rendering ($HOST vs $PLAIN)"
 kill -0 $NP 2>/dev/null || fail "wmnotify died on markup"
 
@@ -224,5 +224,29 @@ k t Up Up Up Down r
 k t; kill -0 $FP 2>/dev/null || fail "wmfiles died in the trash view: $(cat "$T/ferr2")"
 kill -0 $FP 2>/dev/null || fail "wmfiles died during file operations: $(cat "$T/ferr2")"
 grep -qE "Sanitizer|runtime error" "$T/ferr2" && fail "wmfiles ops sanitizer report"
+# several items at once: Space / Ctrl+click / Shift+click marks, one undo step per operation, Return and "open with"
+kill $FP 2>/dev/null; sleep 0.3
+MS="$T/ms"; mkdir -p "$MS/d"; for f in m1 m2 m3 m4 ow; do echo "$f" > "$MS/$f.txt"; done
+WMFILES_OPENER=touch XDG_DATA_HOME="$T/xdg" build/wmfiles "$MS" 2>"$T/ferr3" & FP=$!; PIDS="$PIDS $FP"; sleep 1
+F=$($P find WMFiles | cut -d' ' -f1); [ -n "$F" ] || fail "wmfiles (multi) did not start: $(cat "$T/ferr3")"
+# row geometry from the pixels: select row 0, then measure the highlighted band (works for any theme/font)
+$P click $F 60 32; sleep 0.3; HL=$($P pixel $F 60 32); RT=32; while [ "$($P pixel $F 60 $((RT - 1)))" = "$HL" ]; do RT=$((RT - 1)); done
+RB=32; while [ "$($P pixel $F 60 $((RB + 1)))" = "$HL" ]; do RB=$((RB + 1)); done; RH=$((RB - RT + 1)); [ "$RH" -ge 10 ] || fail "could not measure the row height ($RT..$RB)"
+row() { echo $((RT + $1 * RH + RH / 2)); }                        # y of the middle of row N (0 = first row)
+k Down space space Delete                                        # cursor: d, m1; mark m1, m2; trash both
+[ ! -e "$MS/m1.txt" ] && [ ! -e "$MS/m2.txt" ] && [ -e "$MS/m3.txt" ] || fail "Space-marked items were not trashed together"
+k ctrl+z; [ -e "$MS/m1.txt" ] && [ -e "$MS/m2.txt" ] || fail "one Ctrl+Z must restore every item of the operation"
+$P click $F 60 $(row 1) "1+ctrl"; $P click $F 60 $(row 3) "1+ctrl"; sleep 0.2          # mark m1 and m3
+k ctrl+c; $P click $F 60 $(row 0); sleep 0.3; k Right ctrl+v      # into d
+[ -f "$MS/d/m1.txt" ] && [ -f "$MS/d/m3.txt" ] && [ ! -e "$MS/d/m2.txt" ] && [ ! -e "$MS/d/m4.txt" ] || fail "pasting two marked items copied the wrong set: $(ls "$MS/d")"
+k ctrl+z; [ ! -e "$MS/d/m1.txt" ] && [ ! -e "$MS/d/m3.txt" ] || fail "undo of a two-item paste"
+$P click $F 60 $(row 1); $P click $F 60 $(row 3) "1+shift"; sleep 0.2; k Delete        # range m1..m3
+[ ! -e "$MS/m1.txt" ] && [ ! -e "$MS/m2.txt" ] && [ ! -e "$MS/m3.txt" ] && [ -e "$MS/m4.txt" ] || fail "Shift+click range delete"
+touch -d 2001-01-01 "$MS/m4.txt" "$MS/ow.txt"                    # rows now: d, m4, ow
+$P click $F 60 $(row 1); k Return; sleep 0.3
+[ "$(stat -c %Y "$MS/m4.txt")" -gt 1500000000 ] || fail "Return did not open the file with \$WMFILES_OPENER"
+$P click $F 60 $(row 2); k o t o u c h Return; sleep 0.3
+[ "$(stat -c %Y "$MS/ow.txt")" -gt 1500000000 ] || fail "open with (o, typed command) did not run"
+kill -0 $FP 2>/dev/null || fail "wmfiles died in the multi-select tests: $(cat "$T/ferr3")"
 echo "ok: wmfiles"
 echo "all GUI tests passed"
