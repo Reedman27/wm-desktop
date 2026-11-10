@@ -11,7 +11,7 @@ grep -q "vendor-tool" build/list.txt           || fail "vendor subdir id prefix"
 ! grep -q "Hidden Thing" build/list.txt        || fail "NoDisplay shown"
 ! grep -q "GNOME Only" build/list.txt          || fail "OnlyShowIn=GNOME shown"
 ! grep -q "Not Installed" build/list.txt       || fail "TryExec ignored"
-[ "$(wc -l < build/list.txt)" -eq 4 ]          || fail "expected 4 apps"
+[ "$(wc -l < build/list.txt)" -eq 5 ]          || fail "expected 5 apps"
 LANG=de_DE.UTF-8 $W list $F | grep -q Taschenrechner || fail "localized name"
 $W menu $F > build/x11.menu
 grep -q 'SHEXEC, "xterm -e htop"' build/x11.menu     || fail "terminal wrap"
@@ -24,7 +24,7 @@ s = re.sub(r'"(?:\\.|[^"\\])*"', '""', s)         # drop strings, then check bal
 s = re.sub(r'//.*', '', s)
 assert s.count('(') == s.count(')'), 'unbalanced parens'
 PY
-$W json $F | python3 -c "import json,sys; d=json.load(sys.stdin); assert len(d)==4 and d[0]['id']"
+$W json $F | python3 -c "import json,sys; d=json.load(sys.stdin); assert len(d)==5 and d[0]['id']"
 # exec / launch / skipped CLI
 build/wmapps exec org.gnome.Calculator "/tmp/a b" $F | tr '\n' '|' | grep -qF 'gnome-calculator|file:///tmp/a%20b|' || fail "exec: %U must become a file:// URI"
 build/wmapps exec htop -t "kitty -e" $F | tr '\n' '|' | grep -qF 'kitty|-e|htop|' || fail "exec: terminal prefix"
@@ -36,11 +36,11 @@ C="$PWD/build/icon-cache"; rm -rf "$C"; export XDG_CACHE_HOME="$C"
 IC=$(build/wmapps icons $F)
 echo "$IC" | grep -q ' 0 without icon' || fail "icons: some app has no icon: $IC"
 echo "$IC" | grep -q '^file .*org.gnome.Calculator' || fail "icons: theme icon not used for Calculator"
-echo "$IC" | grep -q '^generated .*htop' || fail "icons: app without any icon must get a generated tile"
+echo "$IC" | grep -q '^generated .*zzz-iconless' || fail "icons: app without any icon must get a generated tile"
 XDG_DATA_DIRS="$PWD/data" build/wmapps icons --dir "$PWD/data" | grep -A1 '^file  *wmfiles' | grep -q 'wmfiles\.png' || fail "icons: wmfiles must resolve to its shipped PNG"
 WMDOCK_APPDIR="$PWD/tests/fixtures/share" build/wmdock attrs | grep -q 'AlwaysUserIcon' && fail "attrs: AlwaysUserIcon only with --always"
 WMDOCK_APPDIR="$PWD/tests/fixtures/share" build/wmdock attrs --always | grep -q 'AlwaysUserIcon = Yes' || fail "attrs --always"
-[ "$(WMDOCK_APPDIR="$PWD/tests/fixtures/share" build/wmdock attrs | grep -c ' = { Icon = ')" -eq 4 ] || fail "attrs: every app (4) must get an Icon entry"
+[ "$(WMDOCK_APPDIR="$PWD/tests/fixtures/share" build/wmdock attrs | grep -c ' = { Icon = ')" -eq 5 ] || fail "attrs: every app (5) must get an Icon entry"
 WMDOCK_APPDIR="$PWD/tests/fixtures/share" build/wmdock state org.gnome.Calculator nonexistent-app 2>/dev/null | tr '\n' '|' | grep -qF '},|);' && fail "state: trailing comma when a later id is unknown"
 unset XDG_CACHE_HOME
 echo "all WMApps tests passed"
@@ -100,7 +100,7 @@ $D apply-icons --dry-run 2>/dev/null | grep -q ' = { Icon = '       || fail "app
 [ "$(wc -l < "$AF")" -eq 3 ]                                           || fail "apply-icons: dry run changed the file"
 $D apply-icons 2>/dev/null                                             || fail "apply-icons failed"
 grep -q '"mine.Mine" = { Icon = "/my/own.png"; };' "$AF"              || fail "apply-icons: existing entry lost"
-[ "$(grep -c ' = { Icon = ' "$AF")" -eq 5 ]                            || fail "apply-icons: expected 1 existing + 4 new entries"
+[ "$(grep -c ' = { Icon = ' "$AF")" -eq 6 ]                            || fail "apply-icons: expected 1 existing + 5 new entries"
 ls "$AF".bak-* >/dev/null 2>&1                                         || fail "apply-icons: no backup written"
 grep -q '/my/own.png' "$AF".bak-*                                      || fail "apply-icons: backup does not hold the original"
 [ "$(head -c1 "$AF")" = "{" ] && [ "$(tail -n1 "$AF")" = "}" ]         || fail "apply-icons: result is not a dict"
@@ -109,7 +109,7 @@ echo 'garbage, not a dict' > "$AF"; cp "$AF" "$A/before"
 $D apply-icons 2>/dev/null && fail "apply-icons: must refuse an unparseable file"
 cmp -s "$AF" "$A/before"                                               || fail "apply-icons: touched an unparseable file"
 rm -f "$AF"; $D apply-icons 2>/dev/null                                || fail "apply-icons: creating a new file failed"
-[ "$(grep -c ' = { Icon = ' "$AF")" -eq 4 ]                            || fail "apply-icons: new file entries"
+[ "$(grep -c ' = { Icon = ' "$AF")" -eq 5 ]                            || fail "apply-icons: new file entries"
 rm -rf "$A"; unset WMAKER_USER_ROOT WMDOCK_APPDIR
 echo "all apply-icons tests passed"
 
