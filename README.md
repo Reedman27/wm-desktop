@@ -41,6 +41,12 @@ mtime changes. Options: `-t "kitty -e"` (terminal for `Terminal=true` apps; defa
 `-T template` (your own menu with a line `@APPLICATIONS@` where the generated "Applications" submenu goes),
 `--dir D` (extra data dir), `--once` (write once and exit; good for cron or a package hook).
 
+**Keeping your own root menu?** (for example one you edit with WPrefs.) Run `wmmenud --apps-only &`: it then keeps only the
+generated "Applications" submenu in `~/.config/wm-desktop/applications.menu` (`-o` changes the path), and you include it from your own
+menu as an external submenu:
+
+    (Applications, OPEN_MENU, "~/.config/wm-desktop/applications.menu")
+
 ### 2. wmapps — the registry from the command line
     wmapps list                                  # category, native/flatpak, name, id
     wmapps json                                  # everything, for scripts
@@ -80,7 +86,8 @@ and flags icons found under a guessed name. No app is left without one.
     wmsettings set focus sloppy             # focus | placement | icon_size | animations | dock | terminal | icon_theme | notify_corner | notify_timeout
     wmsettings set icon_theme Papirus       # which icon theme wins (else GTK's theme, then hicolor)
     wmsettings apply [--dry-run]            # writes them into Window Maker via its own `wdwrite`
-`apply` needs Window Maker's `wdwrite` in your PATH; restart Window Maker (or use WPrefs' Reload) to see
+`apply` writes only the keys you have set yourself with `wmsettings set` (so choices you made in WPrefs are never overwritten
+by our defaults), and needs Window Maker's `wdwrite` in your PATH. Restart Window Maker (or use WPrefs' Reload) to see
 changes. Twelve keys only; WPrefs remains the full configuration tool.
 
 ### 5. wmnotify — desktop notifications
@@ -203,8 +210,21 @@ Everything else consumes this; nothing else scans application directories.
 - Data dirs that do not exist at daemon start are found by a 60-second timer, unless their parent is missing too.
 - Icons: scaled (`@2x`) directories are ignored; the generated tile supports Latin letters and digits only (anything else shows `#`); SVG rendering needs one of the converters above, otherwise such apps get the generated tile.
 
+## File safety and platform notes
+- **Linux only.** wm-desktop uses inotify and Linux file-system calls. Other Unixes are not supported.
+- **Nothing is ever overwritten.** Rename, move, trash and restore use `renameat2(RENAME_NOREPLACE)`, so a name that appears
+  between our check and the rename is never replaced. Where the kernel or file system lacks it (`ENOSYS`, `EINVAL`,
+  `ENOTSUP`), wmfiles falls back to `link()` + `unlink()` for files and links, and to plain `rename()` for folders (which can
+  only replace an *empty* folder, so no data can be lost). Both paths run in the test suite.
+- **Copies clean up only what they made.** A failed copy removes only the partial object this operation created, never a
+  destination that appeared meanwhile. If a move or trash across file systems copies successfully but cannot remove the
+  original, the complete copy is kept and the error is reported rather than deleting anything.
+- **Trashing a dangling symlink works** (the link itself is trashed and restored, never followed). `.` and `..` as the last
+  path component are refused.
+- SVG icons are cached by path, device, modification time (to the nanosecond) and size, so editing an SVG always renders it again.
+
 ## Verification status (honest)
-- `make check` passes, also under `make sanitize` (ASan + UBSan): 93 WMApps, 35 WMIcons, 83 WMTheme and 48 file-operation unit checks, shell suites (including `wmdock apply-icons` on a scratch `WMAKER_USER_ROOT`), dock window matching against a fake EWMH window manager, and GUI tests.
+- `make check` passes, also under `make sanitize` (ASan + UBSan): 93 WMApps, 41 WMIcons, 83 WMTheme and 57 file-operation unit checks (the last suite runs twice, once with `renameat2` and once with the fallback), shell suites (including `wmdock apply-icons` on a scratch `WMAKER_USER_ROOT`), dock window matching against a fake EWMH window manager, and GUI tests.
 - **GUI tests** (`tests/run_gui.sh`) run `wmnotify` and `wmfiles` under Xvfb with a private D-Bus session bus (no window manager), send real notifications through `gdbus`, and read pixels back with `tests/xprobe.c` to prove the title bar, body, selection and text are drawn in the colours of a fixture theme file and that changing the file changes the next draw. They also cover gradient rendering, live restyling, replace-id, close, expiry, critical urgency, click-to-dismiss, the single-instance guard, `wmfiles` double-click opening and its trash/new folder/rename/copy/cut/paste keys. They SKIP when Xvfb, dbus-daemon, gdbus or a built `wmnotify` is missing.
 - A screenshot of a themed notification and `wmfiles` was looked at (Window Maker's default grey-blue menu colours).
 - Generated tiles and the `wmfiles` icon were rendered with ImageMagick/rsvg and looked at; I have **not** seen anything inside a running Window Maker (its XPM/PNG loaders and menu/defaults formats were checked by reading its source).

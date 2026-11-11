@@ -40,18 +40,31 @@ if [ -x build/wmnotify-send ]; then
 fi
 build/wmsettings apply --dry-run | grep -q 'FocusMode Sloppy'     || fail "settings -> FocusMode"
 build/wmsettings apply --dry-run | grep -q 'DisableAnimations YES' || fail "settings inverted bool"
+[ -z "$(build/wmsettings apply --dry-run | grep 'DisableDock\|IconSize')" ]            || fail "settings apply wrote a key nobody set"
 printf '# keep me\nterminal = foot -e\n' > "$WMCONFIG_FILE"; build/wmsettings set focus click
 grep -q '^# keep me' "$WMCONFIG_FILE"                              || fail "settings dropped comments"
 build/wmmenud --once -o "$T/m" --dir "$FIX/share" 2>/dev/null; grep -q 'foot -e htop' "$T/m" || fail "wmmenud ignores shared terminal setting"
+build/wmmenud --once --apps-only -o "$T/apps.menu" --dir "$FIX/share" 2>/dev/null
+head -n1 "$T/apps.menu" | grep -q '^("Applications",'              || fail "wmmenud --apps-only: not an Applications submenu"
+grep -q 'foot -e htop' "$T/apps.menu"                              || fail "wmmenud --apps-only: lost the terminal setting"
+! grep -q 'Window Maker\|EXIT\|RESTART' "$T/apps.menu"             || fail "wmmenud --apps-only: contains root-menu entries"
+( export HOME="$T/h-apps" XDG_CONFIG_HOME=; build/wmmenud --once --apps-only --dir "$FIX/share" 2>/dev/null; [ -s "$HOME/.config/wm-desktop/applications.menu" ] ) \
+                                                                   || fail "wmmenud --apps-only: wrong default output path"
 unset WMCONFIG_FILE
 
 echo "all headless tests passed"
 
 # ---- need X (Xvfb only; wmnotify and wmfiles are covered by run_gui.sh) ----
 command -v Xvfb >/dev/null || { echo "SKIP: X tests (need Xvfb)"; exit 0; }
-D=:$((90 + $$ % 9))
-Xvfb $D -screen 0 800x400x24 >/dev/null 2>&1 & PIDS="$PIDS $!"; sleep 1
-export DISPLAY=$D
+# let Xvfb pick a free display itself (no guessing from the PID); wait up to ~10 s for it to report one
+Xvfb -displayfd 3 -screen 0 800x400x24 3>"$T/display" >/dev/null 2>&1 & XPID=$!; PIDS="$PIDS $XPID"
+for i in $(seq 100); do
+  [ -s "$T/display" ] && break
+  kill -0 "$XPID" 2>/dev/null || fail "Xvfb failed to start (needs Xvfb with -displayfd, X.Org server 1.13 or newer)"
+  sleep 0.1
+done
+[ -s "$T/display" ] || fail "Xvfb did not report a display"
+export DISPLAY=":$(head -n1 "$T/display")"
 
 build/wmdock watch > "$T/watch" & PIDS="$PIDS $!"; sleep 0.5
 build/fakewm gnome-calculator Gnome-calculator Calculator 1500 & sleep 0.5

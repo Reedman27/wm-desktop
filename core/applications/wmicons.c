@@ -331,7 +331,9 @@ int wmicons_convert_svg(const char *svg, int size, char *out, size_t outlen) {
     if (stat(svg, &st) || !cache_dir(dir, sizeof dir)) return 0;
     char sz[16], nm[80], key[4400]; snprintf(sz, sizeof sz, "%d", size);
     safe_name(svg, nm, sizeof nm); { char *dot = strrchr(nm, '.'); if (dot && !strcasecmp(dot, ".svg")) *dot = 0; }
-    snprintf(key, sizeof key, "%s|%ld|%lld", svg, (long)st.st_mtime, (long long)st.st_size);
+    snprintf(key, sizeof key, "%s|%lld|%ld|%ld|%lld", svg,
+             (long long)st.st_dev, (long)st.st_mtim.tv_sec,
+             st.st_mtim.tv_nsec, (long long)st.st_size);
     char final[8300]; snprintf(final, sizeof final, "%s/%s-%d-%08x.png", dir, nm, size, (unsigned)fnv(key, 2166136261u));
     if (is_file(final)) { snprintf(out, outlen, "%s", final); return 1; }           /* cached, SVG unchanged */
 

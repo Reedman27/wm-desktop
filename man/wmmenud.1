@@ -3,11 +3,19 @@
 wmmenud \- keep a Window Maker menu in sync with installed applications
 .SH SYNOPSIS
 .B wmmenud
-[\-o \fIout\fR] [\-t "\fIterm \-e\fR"] [\-T \fItemplate\fR] [\-\-dir \fID\fR] [\-\-once]
+[\-o \fIout\fR] [\-t "\fIterm \-e\fR"] [\-T \fItemplate\fR] [\-\-apps\-only] [\-\-dir \fID\fR] [\-\-once]
 .SH DESCRIPTION
 Watches every applications directory (with inotify), waits for a burst of changes to settle, regenerates the menu and
 replaces the output file atomically. With \fB\-\-once\fR it writes the menu once and exits. A template lets you keep your
 own entries and put the generated applications where you want them.
+.SH OPTIONS
+.TP
+\fB\-\-apps\-only\fR
+Write only the ("Applications", ...) submenu, by default to \fI~/.config/wm-desktop/applications.menu\fR, instead of a
+whole root menu. Use it when you keep your own root menu (for example with WPrefs) and want just the generated
+applications inside it, as an external submenu:
+.br
+(Applications, OPEN_MENU, "~/.config/wm-desktop/applications.menu")
 .SH SEE ALSO
 .BR wmapps (1),
 .BR wm-autostart (1)

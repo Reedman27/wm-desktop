@@ -78,6 +78,9 @@ echo "all wmmenud tests passed"
 
 # ---- wmgfx ----
 G="build/wmgfx"; export WMGFX_SYSFS="$PWD/tests/fixtures/sysfs"
+# the fixture's driver links dangle by design; recreate them (zips and some checkouts drop dangling symlinks)
+ln -sfn ../../../../bus/pci/drivers/amdgpu "$WMGFX_SYSFS/class/drm/card0/device/driver"
+ln -sfn ../../../../bus/pci/drivers/nvidia "$WMGFX_SYSFS/class/drm/card1/device/driver"
 $G detect | grep -q '^driver: amdgpu'           || fail "gfx: amdgpu not detected"
 $G detect | grep -q '^driver: nvidia'           || fail "gfx: second card not detected"
 [ "$($G detect | grep -c '^driver')" -eq 2 ]    || fail "gfx: connector dirs counted as cards"

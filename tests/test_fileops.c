@@ -35,6 +35,8 @@ int main(void) {
     CHECK(wmfo_mkdir(root, "New", NULL, 0) == -1);                                            /* exists */
     CHECK(wmfo_rename(P("a.txt"), "b.txt", out, sizeof out) == 0 && has("b.txt") && !has("a.txt"));
     CHECK(wmfo_rename(P("b.txt"), "New", NULL, 0) == -1 && has("b.txt"));                    /* never replaces */
+    put("keep.txt", "do not replace");
+    CHECK(wmfo_rename(P("b.txt"), "keep.txt", NULL, 0) == -1 && !strcmp(slurp("keep.txt"), "do not replace"));
     CHECK(wmfo_rename(P("b.txt"), "../x", NULL, 0) == -1);
     CHECK(wmfo_rename(P("b.txt"), "b.txt", NULL, 0) == 0);                                     /* no-op */
 
@@ -70,6 +72,18 @@ int main(void) {
     CHECK(wmfo_trash(P("does-not-exist")) == -1);
     { char c[900]; snprintf(c, sizeof c, "ln -s /nonexistent-target '%s/dangling'", root); if (system(c)) {} }
     CHECK(wmfo_trash(P("dangling")) == 0 && !has("dangling"));                                                                        /* dangling link */
+    { char o[1024];
+      CHECK(wmfo_restore(P("home/.local/share/Trash/files/dangling"), o, sizeof o) == 0 && has("dangling"));
+      struct stat st; CHECK(lstat(P("dangling"), &st) == 0 && S_ISLNK(st.st_mode));
+    }
+    { char t[1024], o[1024];
+      CHECK(symlink("/missing-relative-target", P("dangling-relative")) == 0);
+      CHECK(chdir(root) == 0);
+      CHECK(wmfo_trash_to("dangling-relative", t, sizeof t) == 0);
+      CHECK(wmfo_restore(t, o, sizeof o) == 0 && !strcmp(o, P("dangling-relative")));
+      struct stat st; CHECK(lstat(P("dangling-relative"), &st) == 0 && S_ISLNK(st.st_mode));
+      CHECK(chdir("/") == 0);
+    }
     setenv("XDG_DATA_HOME", P("xdg"), 1); put("x2.txt", "x"); CHECK(wmfo_trash(P("x2.txt")) == 0 && has("xdg/Trash/files/x2.txt"));       /* honours XDG_DATA_HOME */
 
     /* undo support: trash remembers where it went, restore puts it back (and picks a free name on a clash) */

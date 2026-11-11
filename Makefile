@@ -85,6 +85,10 @@ build/wmfiles: shell/files/wmfiles.c $(THEME) $(THEMEX) $(FILEOPS) $(HDRS) core/
 build/test_fileops: tests/test_fileops.c $(FILEOPS) core/files/wmfileops.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -D_GNU_SOURCE $(LDFLAGS) -o $@ tests/test_fileops.c $(FILEOPS)
+# same tests with renameat2() disabled, to exercise the link()/rename() fallback used on filesystems without RENAME_NOREPLACE
+build/test_fileops_fallback: tests/test_fileops.c $(FILEOPS) core/files/wmfileops.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -D_GNU_SOURCE -DWMFO_NO_RENAMEAT2 $(LDFLAGS) -o $@ tests/test_fileops.c $(FILEOPS)
 build/wmgfx: backends/x11/wmgfx.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ backends/x11/wmgfx.c
@@ -116,11 +120,12 @@ ifneq ($(HAVE_FILES),)
 endif
 	$(if $(wildcard man/*.1),install -d $(DESTDIR)$(PREFIX)/share/man/man1 && install -m 644 man/*.1 $(DESTDIR)$(PREFIX)/share/man/man1/)
 
-check: $(BINS) build/fakewm build/xprobe build/test_wmapps build/test_wmicons build/test_wmtheme build/test_fileops
+check: $(BINS) build/fakewm build/xprobe build/test_wmapps build/test_wmicons build/test_wmtheme build/test_fileops build/test_fileops_fallback
 	build/test_wmapps
 	build/test_wmicons
 	build/test_wmtheme
 	build/test_fileops
+	build/test_fileops_fallback
 	sh tests/run.sh
 	sh tests/run_x.sh
 	sh tests/run_gui.sh

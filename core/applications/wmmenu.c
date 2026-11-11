@@ -10,6 +10,7 @@ static int cmp_name(const void *a, const void *b) {
 }
 
 char *wmmenu_wm_escape(const char *cmd) {
+    if (!cmd) cmd = "";
     char *out = malloc(strlen(cmd) * 2 + 1), *w = out; if (!out) abort();
     for (; *cmd; cmd++) {
         if (*cmd == '\\') { *w++ = '\\'; *w++ = '\\'; }

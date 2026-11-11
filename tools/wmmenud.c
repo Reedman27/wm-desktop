@@ -6,7 +6,11 @@
  * replaces the output file only if its content changed. Window Maker re-reads the
  * WMRootMenu file when its mtime advances, so no signal or restart is needed.
  *
- *   wmmenud [-o out] [-t "term -e"] [-T template] [--once] [--dir D] */
+ *   wmmenud [-o out] [-t "term -e"] [-T template] [--apps-only] [--once] [--dir D]
+ *
+ * --apps-only writes just the ("Applications", ...) submenu (default applications.menu) so a
+ * hand-kept root menu, which WPrefs can edit, can include it as an external submenu:
+ *   (Applications, OPEN_MENU, "~/.config/wm-desktop/applications.menu") */
 #include "../core/applications/wmapps.h"
 #include "../core/applications/wmmenu.h"
 #include "../core/applications/wmwatch.h"
@@ -43,12 +47,13 @@ static void mkdirs(char *path) {            /* mkdir -p for the parent of 'path'
 
 /* returns 1 if the file was rewritten */
 static int regenerate(const char *out, const char *term, const char *tmpl_path,
-                      const char *dir, char **last) {
+                      const char *dir, int apps_only, char **last) {
     WMAppRegistry r; wmapps_scan(&r, NULL, dir);
     char *tmpl = tmpl_path ? slurp(tmpl_path, NULL) : NULL;
     char *buf = NULL; size_t len = 0;
     FILE *m = open_memstream(&buf, &len);
-    wmmenu_emit_root(m, &r, term, tmpl);
+    if (apps_only) { wmmenu_emit_applications(m, &r, term); fputc('\n', m); }
+    else wmmenu_emit_root(m, &r, term, tmpl);
     fclose(m); free(tmpl); wmapps_free(&r);
     if (*last && !strcmp(*last, buf)) { free(buf); return 0; }
     char tmp[4096]; snprintf(tmp, sizeof tmp, "%s.tmp.%d", out, (int)getpid());
@@ -60,25 +65,26 @@ static int regenerate(const char *out, const char *term, const char *tmpl_path,
 }
 
 int main(int argc, char **argv) {
-    char out[4096] = "", *term = NULL, *tmpl = NULL, *dir = NULL; int once = 0;
+    char out[4096] = "", *term = NULL, *tmpl = NULL, *dir = NULL; int once = 0, apps_only = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) snprintf(out, sizeof out, "%s", argv[++i]);
         else if (!strcmp(argv[i], "-t") && i + 1 < argc) term = argv[++i];
         else if (!strcmp(argv[i], "-T") && i + 1 < argc) tmpl = argv[++i];
         else if (!strcmp(argv[i], "--dir") && i + 1 < argc) dir = argv[++i];
         else if (!strcmp(argv[i], "--once")) once = 1;
-        else { fprintf(stderr, "usage: wmmenud [-o out] [-t \"term -e\"] [-T template] [--dir D] [--once]\n"); return 2; }
+        else if (!strcmp(argv[i], "--apps-only")) apps_only = 1;
+        else { fprintf(stderr, "usage: wmmenud [-o out] [-t \"term -e\"] [-T template] [--apps-only] [--dir D] [--once]\n"); return 2; }
     }
     if (!out[0]) {
         const char *x = getenv("XDG_CONFIG_HOME"), *h = getenv("HOME");
-        if (x && *x) snprintf(out, sizeof out, "%s/wm-desktop/root.menu", x);
-        else if (h) snprintf(out, sizeof out, "%s/.config/wm-desktop/root.menu", h);
+        if (x && *x) snprintf(out, sizeof out, "%s/wm-desktop/%s", x, apps_only ? "applications.menu" : "root.menu");
+        else if (h) snprintf(out, sizeof out, "%s/.config/wm-desktop/%s", h, apps_only ? "applications.menu" : "root.menu");
         else { fputs("wmmenud: no HOME and no -o\n", stderr); return 1; }
     }
     char termbuf[512]; if (!term) { snprintf(termbuf, sizeof termbuf, "%s", wmconfig_get("terminal", "xterm -e")); term = termbuf; }
     mkdirs(out);
     char *last = NULL;
-    if (regenerate(out, term, tmpl, dir, &last)) fprintf(stderr, "wmmenud: wrote %s\n", out);
+    if (regenerate(out, term, tmpl, dir, apps_only, &last)) fprintf(stderr, "wmmenud: wrote %s\n", out);
     if (once) { free(last); return 0; }
 
     struct sigaction sa; memset(&sa, 0, sizeof sa); sa.sa_handler = on_sig;   /* no SA_RESTART: poll() must wake */
@@ -95,7 +101,7 @@ int main(int argc, char **argv) {
         if (rc > 0) { if (wmwatch_poll(w)) pending = 1; }
         else if (rc == 0 && pending) {
             pending = 0;
-            if (regenerate(out, term, tmpl, dir, &last)) fprintf(stderr, "wmmenud: menu updated\n");
+            if (regenerate(out, term, tmpl, dir, apps_only, &last)) fprintf(stderr, "wmmenud: menu updated\n");
         } else if (rc == 0 && wmwatch_rearm(w) > 0) pending = 1;     /* a data dir appeared */
     }
     wmwatch_close(w); free(last);

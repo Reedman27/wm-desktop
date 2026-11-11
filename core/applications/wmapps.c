@@ -272,8 +272,16 @@ char *wmapps_shell_command(const WMApp *a, const char *const *files, size_t nfil
     size_t n; char **argv = wmapps_expand(a, files, nfiles, &n);
     Buf b = {0};
     if (terminal && a->terminal) {
-        char **t; size_t tn;
-        if (wmapps_tokenize(terminal, &t, &tn) || !tn) { wmapps_argv_free(t); wmapps_tokenize("xterm -e", &t, &tn); }
+        char **t = NULL; size_t tn = 0;
+        if (wmapps_tokenize(terminal, &t, &tn) || !tn) {
+            wmapps_argv_free(t);
+            t = NULL; tn = 0;
+            if (wmapps_tokenize("xterm -e", &t, &tn)) {
+                wmapps_argv_free(argv);
+                free(b.b);
+                return NULL;
+            }
+        }
         for (size_t i = 0; i < tn; i++) { char *q = wmapps_shell_quote(t[i]); if (b.n) buf_ch(&b, ' '); buf_add(&b, q, strlen(q)); free(q); }
         wmapps_argv_free(t);
     }

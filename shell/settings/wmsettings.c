@@ -73,9 +73,13 @@ int main(int argc, char **argv) {
         int dry = 0;
         for (int i = 2; i < argc; i++) if (!strcmp(argv[i], "--dry-run")) dry = 1;
         int rc = 0;
+        static const char unset[] = "";
         for (size_t i = 0; i < NS; i++) {
             if (!S[i].wm_key) continue;
-            char buf[64]; const char *v = translate(&S[i], wmconfig_get(S[i].key, S[i].def), buf, sizeof buf);
+            /* only push what the user explicitly set; never overwrite WPrefs choices with our defaults */
+            const char *got = wmconfig_get(S[i].key, unset);
+            if (got == unset) continue;
+            char buf[64]; const char *v = translate(&S[i], got, buf, sizeof buf);
             if (dry) { printf("wdwrite WindowMaker %s %s\n", S[i].wm_key, v); continue; }
             pid_t p = fork();
             if (p == 0) { execlp("wdwrite", "wdwrite", "WindowMaker", S[i].wm_key, v, (char *)NULL); _exit(127); }

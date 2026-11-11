@@ -6,8 +6,9 @@ wmsettings \- the few settings the wm-desktop tools share
 list | get \fIKEY\fR | set \fIKEY\fR \fIVALUE\fR | apply [\-\-dry\-run]
 .SH DESCRIPTION
 Settings are validated and stored in a small file ($WMCONFIG_FILE, else $XDG_CONFIG_HOME/wm-desktop/settings.conf, default ~/.config/wm-desktop/settings.conf). \fBlist\fR shows every key
-with its value and allowed values; \fBapply\fR writes the ones that map to Window Maker defaults into the Window Maker
-defaults file (backing it up first). Keys: focus, placement, icon_size, animations, dock, terminal, icon_theme,
+with its value and allowed values; \fBapply\fR runs Window Maker's own \fBwdwrite\fR for the keys that map to Window Maker defaults, but only for keys
+you have set yourself with \fBset\fR; keys left at their defaults are never written, so choices made in WPrefs stay as
+they are. It does not back up the defaults file. With \fB\-\-dry\-run\fR it prints the wdwrite commands instead. Keys: focus, placement, icon_size, animations, dock, terminal, icon_theme,
 notify_corner, notify_dnd, notify_mute, notify_app_timeout, notify_timeout.
 .SH SEE ALSO
 .BR wmnotify (1),

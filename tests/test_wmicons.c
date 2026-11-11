@@ -3,6 +3,7 @@
  * rendering + cache, converter-less fallback, name guessing, generated XPM. Isolated under mkdtemp(). */
 #include "../core/applications/wmicons.h"
 #include <stdio.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -98,6 +99,20 @@ static void svg_and_fallback(void) {
         stat(q, &s2); CHECK(s1.st_mtime == s2.st_mtime);
         put("data/icons/hicolor/scalable/apps/vec.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"><circle cx=\"32\" cy=\"32\" r=\"30\"/></svg>");
         CHECK(wmicons_convert_svg(sp, 64, q, sizeof q) && strcmp(p, q));                   /* changed SVG -> new render */
+        /* Same-size edits within one second must not collide in the SVG cache. */
+        const char *cache_svg = "data/icons/hicolor/scalable/apps/cache-key.svg";
+        const char *svg_a = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"><rect width=\"8\" height=\"8\" fill=\"#36c\"/></svg>";
+        const char *svg_b = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"><rect width=\"8\" height=\"8\" fill=\"#36d\"/></svg>";
+        char cp[700], ca[4096], cb[4096]; struct stat cs1, cs2;
+        put(cache_svg, svg_a); snprintf(cp, sizeof cp, "%s/%s", root, cache_svg);
+        struct timespec ct[2] = {{ 1234567890, 100 }, { 1234567890, 100 }};
+        CHECK(utimensat(AT_FDCWD, cp, ct, 0) == 0 && stat(cp, &cs1) == 0);
+        CHECK(wmicons_convert_svg(cp, 32, ca, sizeof ca));
+        put(cache_svg, svg_b); ct[0].tv_nsec = ct[1].tv_nsec = 200;
+        CHECK(utimensat(AT_FDCWD, cp, ct, 0) == 0 && stat(cp, &cs2) == 0);
+        CHECK(wmicons_convert_svg(cp, 32, cb, sizeof cb));
+        CHECK(cs1.st_size == cs2.st_size && cs1.st_mtime == cs2.st_mtime && cs1.st_mtim.tv_nsec != cs2.st_mtim.tv_nsec);
+        CHECK(strcmp(ca, cb));
         WMApp a = mkapp("vec", "Vec", "vec", ""); int g = -1;
         CHECK(wmicons_for_app(&a, 64, p, sizeof p, &g) == WMICON_CONVERTED && g == 0);
     } else fprintf(stderr, "note: no SVG converter installed, converted-icon checks skipped\n");
@@ -111,7 +126,7 @@ static void svg_and_fallback(void) {
     setenv("PATH", oldpath, 1); free(oldpath);
 
     /* invalid SVG (converter rejects it) also ends in a tile */
-    put("data/icons/hicolor/scalable/apps/broken.svg", "<svg/>");
+    put("data/icons/hicolor/scalable/apps/broken.svg", "this is not an SVG document <");
     WMApp c = mkapp("broken", "Broken", "broken", ""); s = wmicons_for_app(&c, 64, p, sizeof p, &g);
     CHECK(s == WMICON_GENERATED);
 
