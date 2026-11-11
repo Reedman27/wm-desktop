@@ -10,11 +10,19 @@ Wayland menu backend is in git history, commit 1). Window Maker's own source is 
 Plain C99, no autotools. Needs libc and Xlib. `wmnotify` and `wmfiles` also need Xft (as Window Maker does) and `wmnotify` needs libdbus-1; `make` skips what it cannot build.
 libwraster (`wrlib`, shipped with Window Maker) is optional: with it gradients are exact and notification icons load (PNG/XPM); without it gradients degrade to two colours and icons are skipped. No systemd, no Flatpak requirement, no GNOME/KDE libraries.
 
+![wmnotify and wmfiles under three Window Maker themes](docs/screenshots/gallery.png)
+
+*The same programs under three themes (`docs/make-screenshots.sh` regenerates the pictures; full size in `docs/screenshots/`).*
+
 ## Build
     make                      # builds into ./build
     make check                # unit + shell tests (X tests need Xvfb, xdotool, dbus-run-session)
     make sanitize             # same tests under ASan + UBSan
-    make install PREFIX=/usr/local      # honours CC, CFLAGS, LDFLAGS, DESTDIR
+    make install PREFIX=/usr/local      # honours CC, CFLAGS, LDFLAGS, PKG_CONFIG, DESTDIR; also installs man pages
+    make uninstall PREFIX=/usr/local    # removes exactly what install put there
+    make WITH_WRASTER=no WITH_NOTIFY=no WITH_FILES=no   # each is auto (default), yes (fail if missing) or no
+
+Gentoo: an ebuild overlay with USE flags is maintained separately; see `CONTRIBUTING.md` for the build switches it relies on.
 
 Nothing is installed or written outside the project unless you run `make install` or the tools below.
 
@@ -83,7 +91,7 @@ Implements the freedesktop notification service (Notify, CloseNotification, repl
 `urgency`, `value`, `image-path` and `desktop-entry` hints, action buttons, `ActionInvoked` and `NotificationClosed`
 signals). Pop-ups stack in a corner; click the body to dismiss (or invoke the `default` action), click a button to
 invoke it. `critical` ones never expire. They are drawn like a Window Maker menu: a title bar with the summary, the
-body underneath, with the app's icon, antialiased UTF-8 text (markup tags are stripped, not rendered) and a progress
+body underneath, with the app's icon, antialiased UTF-8 text (`<b>`, `<i>`, `<u>` and `<a>` in the body are rendered, other tags dropped) and a progress
 bar for `value`; critical ones use the highlight colours. Icons come from the hint, else the app's registry icon.
 Hovering a pop-up pauses its timeout; it closes 2 s after the pointer leaves.
 Settings (`wmsettings set`, applied to the next notification): `notify_corner` (top-right, top-left, bottom-right,
@@ -95,13 +103,17 @@ Everything wmnotify receives, hidden or not, is appended to `~/.local/state/wm-d
 Wrongly typed calls get a D-Bus `InvalidArgs` error.
 
 `wmnotify-send` is a small notify-send replacement for scripts: `-a app -i icon -u low|normal|critical -t ms
--r id -p -v 0..100 -A key=label -e -w` (see its `--help`); `-w` waits for the close or action signal.
+-r id -p -v 0..100 -A key=label -R key=command -e -w` (`-R` runs a shell command when that button is picked) (see its `--help`); `-w` waits for the close or action signal.
 
 ### 6. wmfiles — column file browser
     wmfiles [directory]
 Ships `data/applications/wmfiles.desktop` and an icon (SVG + 48/64/128 px PNG), installed by `make install`, so it
 appears in the generated menu and Dock like any other app. It follows the disk (inotify): files created or removed elsewhere show up on their own. Click a folder to open its next column; double-click a file to open it with `xdg-open` (or `$WMFILES_OPENER`).
 Keys: Up/Down select, Right enter, Left back, `h` hidden files, `q` quit; wheel scrolls.
+Several items at once: `Space` marks and moves down, `Ctrl+click` toggles, `Shift+click` marks a range, `Ctrl+A` marks the
+column, `Esc` clears; Delete, copy, cut and drag then apply to every marked item, and one `Ctrl+Z` undoes the whole
+operation. `Return` opens (or enters a folder), `o` opens with a command you type. Right-click shows a menu; drag rows onto
+a folder or another column to move them, hold `Ctrl` when dropping to copy.
 File operations (never overwrite, never follow symlinks; copies keep symlinks as links): `Delete` moves to the XDG
 trash (with a `.trashinfo`, so file managers can restore it), `n` new folder, `F2` rename, `Ctrl+C` / `Ctrl+X` /
 `Ctrl+V` copy / cut / paste into the active column's folder, `Ctrl+Z` undo (rename, new folder, copy, move, trash;
@@ -128,6 +140,8 @@ rendered exactly (needs libwraster; otherwise a two-colour approximation). Pixma
 back to their colour. Fonts are Xft, so fontconfig names such as `Sans:bold:pixelsize=12` are used as written.
 Bevels are derived from the face colours rather than copied from Window Maker's own renderer, so it looks like a
 Window Maker menu, not pixel-identical to one.
+
+`wmnotifyctl dnd on|off|toggle`, `mute APP`, `unmute APP`, `history`, `test` wrap the settings above.
 
 ### Autostart
     wm-autostart install [--no-menu] [--no-notify] [--dry-run]    # start wmmenud and wmnotify with Window Maker
@@ -189,5 +203,5 @@ Everything else consumes this; nothing else scans application directories.
 - **GUI tests** (`tests/run_gui.sh`) run `wmnotify` and `wmfiles` under Xvfb with a private D-Bus session bus (no window manager), send real notifications through `gdbus`, and read pixels back with `tests/xprobe.c` to prove the title bar, body, selection and text are drawn in the colours of a fixture theme file and that changing the file changes the next draw. They also cover gradient rendering, live restyling, replace-id, close, expiry, critical urgency, click-to-dismiss, the single-instance guard, `wmfiles` double-click opening and its trash/new folder/rename/copy/cut/paste keys. They SKIP when Xvfb, dbus-daemon, gdbus or a built `wmnotify` is missing.
 - A screenshot of a themed notification and `wmfiles` was looked at (Window Maker's default grey-blue menu colours).
 - Generated tiles and the `wmfiles` icon were rendered with ImageMagick/rsvg and looked at; I have **not** seen anything inside a running Window Maker (its XPM/PNG loaders and menu/defaults formats were checked by reading its source).
-- **Not tested:** every tool against a *running* Window Maker, `wmgfx` on real hardware (only fake `/sys` data), `wmsettings apply` (needs `wdwrite`), real application notification clients other than `gdbus`, non-Latin glyphs on a machine with CJK fonts, and input methods (XIM) in wmfiles.
+- **Not tested:** every tool against a *running* Window Maker, `wmgfx` on real hardware (only fake `/sys` data), `wmsettings apply` (needs `wdwrite`), real application notification clients other than `gdbus`, non-Latin glyphs on a machine with CJK fonts, input methods (XIM) in wmfiles, and the wmfiles context menu and drag-and-drop with a real pointer under a real window manager (tests use synthetic events).
 - License: MIT (see `LICENSE`). Reference projects keep their own terms (Window Maker is GPL-2.0-or-later).

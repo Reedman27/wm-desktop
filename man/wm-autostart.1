@@ -1,0 +1,16 @@
+.TH WM-AUTOSTART 1 "wm-desktop" "wm-desktop" "User Commands"
+.SH NAME
+wm-autostart \- start wmmenud and wmnotify with Window Maker
+.SH SYNOPSIS
+.B wm-autostart install
+[\-\-no\-menu] [\-\-no\-notify] [\-\-dry\-run]
+.br
+.B wm-autostart remove
+[\-\-dry\-run]
+.br
+.B wm-autostart status
+.SH DESCRIPTION
+Edits Window Maker's autostart script (\fB$WMAKER_USER_ROOT\fR/Library/WindowMaker/autostart, default
+~/GNUstep/Library/WindowMaker/autostart). Its lines sit between "# >>> wm-desktop" and "# <<< wm-desktop" markers:
+\fBinstall\fR replaces that block, \fBremove\fR deletes only that block, and every other line is left as it was.
+The file is backed up to autostart.bak\-\fItime\fR before each change. Dockapps and other entries are not touched.

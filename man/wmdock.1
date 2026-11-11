@@ -1,0 +1,11 @@
+.TH WMDOCK 1 "wm-desktop" "wm-desktop" "User Commands"
+.SH NAME
+wmdock \- helpers that connect Window Maker's Dock to desktop applications
+.SH SYNOPSIS
+.B wmdock
+list | watch | state \fIID\fR... | attrs [\-\-always] | apply\-icons [\-\-dry\-run] [\-\-always]
+.SH DESCRIPTION
+\fBlist\fR matches running windows to desktop entries, \fBwatch\fR follows them, \fBstate\fR prints whether given
+applications are running, \fBattrs\fR prints a window-attributes list that gives docked applications their proper icons,
+and \fBapply\-icons\fR merges that list into Window Maker's WMWindowAttributes (backing the file up first). Existing
+choices of yours are kept unless \fB\-\-always\fR is given. Requires an X display.

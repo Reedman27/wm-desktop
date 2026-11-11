@@ -1,0 +1,13 @@
+.TH WMMENUD 1 "wm-desktop" "wm-desktop" "User Commands"
+.SH NAME
+wmmenud \- keep a Window Maker menu in sync with installed applications
+.SH SYNOPSIS
+.B wmmenud
+[\-o \fIout\fR] [\-t "\fIterm \-e\fR"] [\-T \fItemplate\fR] [\-\-dir \fID\fR] [\-\-once]
+.SH DESCRIPTION
+Watches every applications directory (with inotify), waits for a burst of changes to settle, regenerates the menu and
+replaces the output file atomically. With \fB\-\-once\fR it writes the menu once and exits. A template lets you keep your
+own entries and put the generated applications where you want them.
+.SH SEE ALSO
+.BR wmapps (1),
+.BR wm-autostart (1)

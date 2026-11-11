@@ -1,0 +1,56 @@
+.TH WMNOTIFY-SEND 1 "wm-desktop" "wm-desktop" "User Commands"
+.SH NAME
+wmnotify-send \- send a desktop notification from a script
+.SH SYNOPSIS
+.B wmnotify-send
+[\fIoptions\fR] \fISUMMARY\fR [\fIBODY\fR]
+.br
+.B wmnotify-send \-H
+[\fICOUNT\fR]
+.SH DESCRIPTION
+A small notify-send replacement that talks to any notification daemon over D-Bus. It prints the new
+notification's id when \fB\-p\fR is given.
+.SH OPTIONS
+.TP
+.BI \-a " app"
+Application name.
+.TP
+.BI \-i " icon"
+Icon name or file path.
+.TP
+.BI \-u " level"
+low, normal or critical.
+.TP
+.BI \-t " ms"
+Timeout in milliseconds; 0 never expires, \-1 lets the daemon choose.
+.TP
+.BI \-r " id"
+Replace an existing notification.
+.TP
+.B \-p
+Print the notification id.
+.TP
+.BI \-v " 0..100"
+Show a progress bar.
+.TP
+.BI \-A " key=label"
+Add an action button. Can be repeated. With \fB\-w\fR the chosen key is printed.
+.TP
+.BI \-R " key=command"
+Run a shell command when that action is picked. Implies \fB\-w\fR; the exit status is the command's.
+.TP
+.B \-e
+Close the notification when this process exits.
+.TP
+.B \-w
+Wait until the notification is closed or an action is picked.
+.TP
+.B \-H \fR[\fICOUNT\fR]
+Print the last COUNT (default 20) notifications wmnotify received, including hidden ones.
+.SH EXAMPLE
+.nf
+wmnotify\-send \-a backup \-A open=Open \-R "open=xdg\-open ~/backups" "Backup finished" "3 GB copied"
+.fi
+.SH SEE ALSO
+.BR wmnotify (1),
+.BR wmnotifyctl (1)

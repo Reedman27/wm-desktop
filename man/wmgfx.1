@@ -1,0 +1,11 @@
+.TH WMGFX 1 "wm-desktop" "wm-desktop" "User Commands"
+.SH NAME
+wmgfx \- detect the graphics hardware and print an X11 tearing fix
+.SH SYNOPSIS
+.B wmgfx
+detect | xorg | picom | apply [\-\-system] | autostart
+.SH DESCRIPTION
+\fBdetect\fR reads /sys/class/drm and names the GPU driver. \fBxorg\fR and \fBpicom\fR print a configuration suited to it
+(an Xorg TearFree snippet, or a picom configuration); \fBautostart\fR prints the picom command line.
+\fBapply\fR writes the picom configuration to ~/.config/picom/picom.conf; with \fB\-\-system\fR it also writes the
+Xorg driver snippet to /etc/X11/xorg.conf.d/20\-wm\-desktop\-gpu.conf (needs root).

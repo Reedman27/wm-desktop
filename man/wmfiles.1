@@ -1,0 +1,58 @@
+.TH WMFILES 1 "wm-desktop" "wm-desktop" "User Commands"
+.SH NAME
+wmfiles \- column file browser that follows the Window Maker theme
+.SH SYNOPSIS
+.B wmfiles
+[\fIdirectory\fR]
+.SH DESCRIPTION
+Shows folders as columns (three visible). Click a folder to open it in the next column; double-click a file to open it
+with $WMFILES_OPENER (default xdg\-open). The columns follow the disk, so changes made elsewhere appear on their own.
+Colours, gradients and fonts come from the active Window Maker theme and are re-read when it changes.
+File operations never overwrite, never follow symbolic links, and are all undoable.
+.SH KEYS
+.TP
+Up, Down, Left, Right
+Move; Right enters the next column.
+.TP
+Return
+Open a file or enter a folder.
+.TP
+Space, Ctrl+A, Esc
+Mark the item and move down; mark everything in the column; clear marks. Ctrl+click toggles, Shift+click marks a range.
+.TP
+Delete
+Move the marked items (or the current one) to the XDG trash.
+.TP
+n, F2
+New folder; rename. A name is typed in the bar at the bottom: Return accepts, Escape cancels.
+.TP
+Ctrl+C, Ctrl+X, Ctrl+V
+Copy, cut, paste into the active column's folder.
+.TP
+o
+Open with a command typed in the bar; the files are appended as arguments.
+.TP
+Ctrl+Z
+Undo the last operation (32 steps; one step covers all items of one operation).
+.TP
+t, r
+Switch to the trash and back; in the trash, restore the selected item to where it came from.
+.TP
+h
+Show or hide hidden files.
+.TP
+q
+Quit.
+.SH MOUSE
+Right-click for a menu (Open, Open with, Rename, New folder, Copy, Cut, Paste, Move to Trash). Drag rows onto a
+folder or another column to move them; hold Ctrl while dropping to copy. The wheel scrolls.
+.SH ENVIRONMENT
+.TP
+.B WMFILES_OPENER
+Command used to open files (default xdg\-open).
+.TP
+.B XDG_DATA_HOME
+Location of the trash (default ~/.local/share/Trash).
+.SH SEE ALSO
+.BR wmnotify (1),
+.BR wmsettings (1)

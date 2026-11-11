@@ -1,0 +1,43 @@
+.TH WMNOTIFY 1 "wm-desktop" "wm-desktop" "User Commands"
+.SH NAME
+wmnotify \- freedesktop notification daemon that follows the Window Maker theme
+.SH SYNOPSIS
+.B wmnotify
+.SH DESCRIPTION
+Owns the D-Bus name org.freedesktop.Notifications on the session bus and shows each notification as a small pop-up
+drawn like a Window Maker menu: the summary in a title bar (MenuTitleBack, MenuTitleColor, MenuTitleFont) over the
+body (MenuTextBack, MenuTextColor, MenuTextFont). Gradients and Xft fonts are used as the theme gives them.
+Critical notifications use the highlight colours and stay until clicked. The theme is re-read while pop-ups are
+visible, so a theme change restyles them.
+.PP
+Supported: icons (the \fBimage-path\fR hint, the icon name, or the application's own icon), action buttons
+(\fBActionInvoked\fR, \fBNotificationClosed\fR), \fBurgency\fR, \fBvalue\fR (progress bar), replacing by id, and the
+markup tags <b>, <i>, <u> and <a> in the body (other tags are dropped). Hovering a pop-up pauses its timeout.
+Clicking the body dismisses it, or invokes the "default" action if the sender offered one. At most eight are shown.
+Only one notification daemon can run; a second instance exits with status 1.
+.SH SETTINGS
+Set with \fBwmsettings set\fR; they apply to the next notification.
+.TP
+.B notify_corner
+top-right (default), top-left, bottom-right or bottom-left.
+.TP
+.B notify_timeout
+Default timeout in milliseconds (default 5000).
+.TP
+.B notify_dnd
+\fBon\fR hides everything except critical notifications (they are still recorded in the history).
+.TP
+.B notify_mute
+Comma-separated application names that never pop up (case-insensitive).
+.TP
+.B notify_app_timeout
+Comma-separated \fIapp\fR:\fIms\fR pairs: default timeout for applications that do not set one.
+.SH FILES
+.TP
+.I ~/.local/state/wm-desktop/notify-history
+Every notification received, one tab-separated line each, trimmed at 256 KB. Overridden by $WMNOTIFY_HISTORY.
+.SH SEE ALSO
+.BR wmnotify-send (1),
+.BR wmnotifyctl (1),
+.BR wmsettings (1),
+.BR wm-autostart (1)

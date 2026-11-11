@@ -1,0 +1,17 @@
+.TH WMAPPS 1 "wm-desktop" "wm-desktop" "User Commands"
+.SH NAME
+wmapps \- list, launch and generate menus from installed desktop applications
+.SH SYNOPSIS
+.B wmapps
+list | json | skipped | icons [\-\-size \fIN\fR] | menu [\-t \fIterm\fR] [\-o \fIfile\fR] | launch \fIID\fR [\fIFILE\fR|\fIURL\fR...] | exec \fIID\fR [\fIFILE\fR|\fIURL\fR...]
+.SH DESCRIPTION
+Reads XDG .desktop files (system, user and Flatpak exports), applies OnlyShowIn/NotShowIn for Window Maker, expands the
+Exec field codes, and prints the result as a list, JSON, an icon list (PNG/XPM, converted from SVG when a converter is
+installed, otherwise generated) or a Window Maker menu.
+.SH OPTIONS
+.TP
+.BI \-\-dir " D"
+Extra applications directory (also used by the tests).
+.TP
+.BI \-\-desktop " NAME"
+Desktop name for OnlyShowIn (default WindowMaker).

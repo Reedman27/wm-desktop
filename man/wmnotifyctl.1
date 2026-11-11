@@ -1,0 +1,33 @@
+.TH WMNOTIFYCTL 1 "wm-desktop" "wm-desktop" "User Commands"
+.SH NAME
+wmnotifyctl \- control wmnotify
+.SH SYNOPSIS
+.B wmnotifyctl
+.I command
+.SH COMMANDS
+.TP
+.BR "dnd " [ on | off | toggle | status ]
+Do not disturb: nothing pops up except critical notifications.
+.TP
+.BI mute " APP"
+Stop pop-ups from an application (names are case-insensitive, no spaces or commas).
+.TP
+.BI unmute " APP"
+Undo \fBmute\fR.
+.TP
+.B muted
+List muted applications.
+.TP
+.BR history " [" COUNT ]
+Recent notifications, including hidden ones.
+.TP
+.B clear\-history
+Forget them.
+.TP
+.B test
+Show a test notification.
+.SH DESCRIPTION
+Settings are stored with \fBwmsettings\fR and take effect on the next notification.
+.SH SEE ALSO
+.BR wmnotify (1),
+.BR wmsettings (1)
