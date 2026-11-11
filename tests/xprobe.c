@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
             } else {
                 e.xbutton.type = press ? ButtonPress : ButtonRelease; e.xbutton.window = w; e.xbutton.root = DefaultRootWindow(d);
                 e.xbutton.x = px; e.xbutton.y = py; e.xbutton.x_root = ox + px; e.xbutton.y_root = oy + py; e.xbutton.button = (unsigned)button;
-                e.xbutton.state = mods; e.xbutton.same_screen = True;
+                e.xbutton.state = (drag && press) ? 0 : mods; e.xbutton.same_screen = True;
                 XSendEvent(d, w, True, press ? ButtonPressMask : ButtonReleaseMask, &e);
             }
             XSync(d, False); usleep(60000);

@@ -11,6 +11,8 @@
  *   Ctrl+C / Ctrl+X / Ctrl+V  copy / cut / paste into the active column's folder
  *   Space / Ctrl+click / Shift+click / Ctrl+A  mark several; Delete, Ctrl+C/X apply to all marked, Esc unmarks
  *   Return  open (file) or enter (folder)      o   open with a command you type
+ *   right-click  context menu (Open, Open with, Rename, New folder, Copy, Cut, Paste, Move to Trash)
+ *   drag rows onto a folder (or another column) to move them; hold Ctrl while dropping to copy
  *   Ctrl+Z  undo the last operation (rename, new folder, copy, move, trash - up to 32 steps)
  *   t       switch to the trash and back; in the trash, r restores the selected item to where it came from
  * The columns follow the disk: a change made elsewhere (a download finishing, another program) shows up on its own.
@@ -58,6 +60,11 @@ typedef struct { int type, group; char a[PATH_MAX], b[PATH_MAX]; } Undo;      /*
 static Undo undo[32]; static int nundo, cur_group;      /* one undo step = every item of one operation */
 static char home_dir[PATH_MAX]; static int in_trash;
 static int ifd = -1, wd[MAXCOL + 1], nwd; static char watched[PATH_MAX * 4];
+enum { A_OPEN, A_OPENWITH, A_RENAME, A_NEWDIR, A_COPY, A_CUT, A_PASTE, A_TRASH, A_RESTORE };
+typedef struct { const char *label; int act, enabled; } MenuItem;
+static Window menu_win; static MenuItem mitem[10]; static int mn, mhot = -1, mw, mh, mrow_h;
+static int drag_state, drag_ci, drag_row, press_x, press_y;       /* 0 idle, 1 pressed on a row, 2 dragging */
+static int drop_ci = -1, drop_row = -1; static char drop_dir[PATH_MAX]; static Cursor hand_cursor;
 static Pixmap tex_body, tex_title; static int tex_w, tex_h, tex_dirty = 1;
 
 static long long now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000LL + t.tv_nsec / 1000000; }
@@ -213,6 +220,12 @@ static void redraw(void) {
         }
         XftDrawSetClip(d, 0);
         bevel(buf, x + 2, TOP - 1, cw - 4, sbt - TOP + 1, 1);
+    }
+    if (drag_state == 2 && drop_ci >= first_visible() && drop_ci < f + VISIBLE && drop_ci < depth) {       /* where the drop would land */
+        int x = (drop_ci - f) * cw; XSetForeground(dpy, gc, th.hi); XSetLineAttributes(dpy, gc, 2, LineSolid, CapButt, JoinMiter);
+        if (drop_row >= 0) XDrawRectangle(dpy, buf, gc, x + 5, TOP + (drop_row - col[drop_ci].scroll) * ROWH + 1, (unsigned)cw - 11, (unsigned)ROWH - 3);
+        else XDrawRectangle(dpy, buf, gc, x + 3, TOP, (unsigned)cw - 7, (unsigned)(sbt - TOP - 2));
+        XSetLineAttributes(dpy, gc, 0, LineSolid, CapButt, JoinMiter);
     }
     /* status / input bar */
     if (tex_title) XCopyArea(dpy, tex_title, buf, gc, 0, 0, (unsigned)width, (unsigned)SB, 0, sbt);
@@ -392,6 +405,133 @@ static void restore_selected(void) {
     Column *c = cur(); if (c->n) { int r = c->sel < c->n ? (c->sel < 0 ? 0 : c->sel) : c->n - 1; select_row(0, r); }
 }
 
+/* ---------- context menu ---------- */
+static void restore_selected(void);
+static void open_selection(void) {
+    Column *c = cur();
+    if (c->sel >= 0 && c->e[c->sel].dir) { if (active + 1 < depth) { active++; if (col[active].sel < 0 && col[active].n) select_row(active, 0); } }
+    else { int n; char **l = gather(&n); open_default(l, n); free_list(l, n); }
+}
+static void do_action(int act) {
+    switch (act) {
+    case A_OPEN: open_selection(); break;
+    case A_OPENWITH: begin_input(M_OPENWITH); break;
+    case A_RENAME: begin_input(M_RENAME); break;
+    case A_NEWDIR: begin_input(M_NEWDIR); break;
+    case A_COPY: do_copy_cut(0); break;
+    case A_CUT: do_copy_cut(1); break;
+    case A_PASTE: do_paste(); break;
+    case A_TRASH: if (in_trash) say(1, "Already in the trash; use Restore", NULL); else do_trash(); break;
+    case A_RESTORE: restore_selected(); break;
+    }
+}
+
+static void menu_close(void) {
+    if (!menu_win) return;
+    XUngrabPointer(dpy, CurrentTime); XUngrabKeyboard(dpy, CurrentTime);
+    XDestroyWindow(dpy, menu_win); menu_win = 0; mhot = -1;
+}
+static void menu_draw(void) {
+    int sc = DefaultScreen(dpy);
+    Pixmap buf = XCreatePixmap(dpy, menu_win, (unsigned)mw, (unsigned)mh, (unsigned)DefaultDepth(dpy, sc));
+    XftDraw *d = XftDrawCreate(dpy, buf, DefaultVisual(dpy, sc), DefaultColormap(dpy, sc));
+    Pixmap tx = wmthemex_texture(dpy, &th, &th.text_tex, mw, mh);
+    if (tx) { XCopyArea(dpy, tx, buf, gc, 0, 0, (unsigned)mw, (unsigned)mh, 0, 0); XFreePixmap(dpy, tx); }
+    else { XSetForeground(dpy, gc, th.face); XFillRectangle(dpy, buf, gc, 0, 0, (unsigned)mw, (unsigned)mh); }
+    for (int i = 0; i < mn; i++) {
+        int y = 1 + i * mrow_h; int hot = i == mhot && mitem[i].enabled;
+        if (hot) { XSetForeground(dpy, gc, th.hi); XFillRectangle(dpy, buf, gc, 1, y, (unsigned)mw - 2, (unsigned)mrow_h); }
+        text(d, hot ? &th.xhi_text : mitem[i].enabled ? &th.xtext : &th.xdisabled, th.font, 10, y + 3, mitem[i].label);
+    }
+    XSetForeground(dpy, gc, th.border); XDrawRectangle(dpy, buf, gc, 0, 0, (unsigned)mw - 1, (unsigned)mh - 1);
+    XCopyArea(dpy, buf, menu_win, gc, 0, 0, (unsigned)mw, (unsigned)mh, 0, 0);
+    XftDrawDestroy(d); XFreePixmap(dpy, buf); XFlush(dpy);
+}
+static void menu_open(int xr, int yr, int on_row) {
+    menu_close(); mn = 0; Column *c = cur(); int has = on_row && c->sel >= 0;
+    if (in_trash) {
+        mitem[mn++] = (MenuItem){ "Restore", A_RESTORE, has }; mitem[mn++] = (MenuItem){ "Copy", A_COPY, has };
+    } else {
+        mitem[mn++] = (MenuItem){ "Open", A_OPEN, has };          mitem[mn++] = (MenuItem){ "Open with...", A_OPENWITH, has };
+        mitem[mn++] = (MenuItem){ "Rename", A_RENAME, has };      mitem[mn++] = (MenuItem){ "New folder", A_NEWDIR, 1 };
+        mitem[mn++] = (MenuItem){ "Copy", A_COPY, has };          mitem[mn++] = (MenuItem){ "Cut", A_CUT, has };
+        mitem[mn++] = (MenuItem){ "Paste", A_PASTE, nclip > 0 };  mitem[mn++] = (MenuItem){ "Move to Trash", A_TRASH, has };
+    }
+    int tw = 0; for (int i = 0; i < mn; i++) { int w = wmx_text_width(dpy, th.font, mitem[i].label, (int)strlen(mitem[i].label)); if (w > tw) tw = w; }
+    mrow_h = th.font->ascent + th.font->descent + 6; mw = tw + 28; mh = mn * mrow_h + 2;
+    int sw = DisplayWidth(dpy, DefaultScreen(dpy)), sh = DisplayHeight(dpy, DefaultScreen(dpy));
+    if (xr + mw > sw) xr = sw - mw;
+    if (yr + mh > sh) yr = sh - mh;
+    if (xr < 0) xr = 0;
+    if (yr < 0) yr = 0;
+    XSetWindowAttributes a; a.override_redirect = True; a.background_pixel = th.face;
+    a.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | KeyPressMask;
+    menu_win = XCreateWindow(dpy, DefaultRootWindow(dpy), xr, yr, (unsigned)mw, (unsigned)mh, 0, CopyFromParent, InputOutput, CopyFromParent, CWOverrideRedirect | CWBackPixel | CWEventMask, &a);
+    XClassHint ch = { "wmfiles-menu", "WMFilesMenu" }; XSetClassHint(dpy, menu_win, &ch);
+    XMapRaised(dpy, menu_win);
+    XGrabPointer(dpy, menu_win, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask, GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+    XGrabKeyboard(dpy, menu_win, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+    menu_draw();
+}
+static void menu_event(XEvent *ev) {
+    if (ev->type == Expose) { if (ev->xexpose.count == 0) menu_draw(); return; }
+    if (ev->type == MotionNotify) {
+        int h = ev->xmotion.y >= 1 && ev->xmotion.x >= 0 && ev->xmotion.x < mw ? (ev->xmotion.y - 1) / mrow_h : -1; if (h >= mn) h = -1;
+        if (h != mhot) { mhot = h; menu_draw(); } return;
+    }
+    if (ev->type == KeyPress) {
+        KeySym ks = XLookupKeysym(&ev->xkey, 0);
+        if (ks == XK_Escape) menu_close();
+        else if (ks == XK_Down || ks == XK_Up) {
+            int step = ks == XK_Down ? 1 : mn - 1, i = mhot < 0 ? (ks == XK_Down ? -1 : 0) : mhot;
+            for (int k = 0; k < mn; k++) { i = (i + step + mn) % mn; if (mitem[i].enabled) { mhot = i; break; } }
+            menu_draw();
+        }
+        else if ((ks == XK_Return || ks == XK_KP_Enter) && mhot >= 0 && mitem[mhot].enabled) { int act = mitem[mhot].act; menu_close(); do_action(act); redraw(); }
+        return;
+    }
+    if (ev->type == ButtonRelease || ev->type == ButtonPress) {
+        int x = ev->xbutton.x, y = ev->xbutton.y;
+        if (ev->type == ButtonRelease && ev->xbutton.button == 3 && mhot < 0) return;          /* the release that ends the opening right-click */
+        int i = (x >= 0 && x < mw && y >= 1 && y < mh) ? (y - 1) / mrow_h : -1;
+        if (i >= mn) i = -1;
+        if (i >= 0 && mitem[i].enabled) { int act = mitem[i].act; menu_close(); msg[0] = 0; do_action(act); redraw(); }
+        else if (i < 0 || ev->type == ButtonPress) menu_close();
+    }
+}
+
+/* ---------- drag and drop ---------- */
+static void drop_target(int x, int y) {           /* which folder a drop at (x, y) would go into */
+    drop_ci = -1; drop_row = -1; drop_dir[0] = 0;
+    int cw = width / VISIBLE, ci = first_visible() + x / cw;
+    if (x < 0 || y < TOP || y >= height - SB || ci >= depth) return;
+    Column *c = &col[ci]; int row = (y - TOP) / ROWH + c->scroll;
+    drop_ci = ci;
+    if (row < c->n && c->e[row].dir && !c->e[row].marked && !(ci == drag_ci && row == drag_row)) { drop_row = row; entry_path(c, row, drop_dir, sizeof drop_dir); }
+    else snprintf(drop_dir, sizeof drop_dir, "%s", c->path);                              /* a file row or empty space: this column's folder */
+}
+static void drag_finish(int ctrl) {
+    int n = 0; char **l = NULL;
+    if (drag_state == 2 && drop_dir[0]) {
+        Column *c = &col[drag_ci]; int cap = 8; l = malloc((size_t)cap * sizeof *l); char p[PATH_MAX * 2];
+        for (int i = 0; i < c->n; i++) if (c->e[i].marked || i == drag_row) { if (c->e[i].marked || !c->e[drag_row].marked) { if (n == cap) { cap *= 2; l = realloc(l, (size_t)cap * sizeof *l); } entry_path(c, i, p, sizeof p); l[n++] = strdup(p); } }
+    }
+    if (hand_cursor) XUndefineCursor(dpy, win);
+    int was = drag_state; drag_state = 0;
+    if (was != 2 || !n) { free_list(l, n); drop_ci = -1; return; }
+    char out[PATH_MAX * 2] = ""; int ok = 0, same = 0; cur_group++;
+    for (int i = 0; i < n; i++) {
+        char dir[PATH_MAX]; snprintf(dir, sizeof dir, "%s", l[i]); char *sl = strrchr(dir, '/'); if (sl) *(sl == dir ? sl + 1 : sl) = 0;
+        if (!ctrl && !strcmp(dir, drop_dir)) { same++; continue; }                          /* already there */
+        int r = ctrl ? wmfo_copy(l[i], drop_dir, out, sizeof out) : wmfo_move(l[i], drop_dir, out, sizeof out);
+        if (r) { say(1, ctrl ? "Cannot copy: %s" : "Cannot move: %s", wmfo_error()); break; }
+        push_undo(ctrl ? U_COPY : U_MOVE, l[i], out); ok++;
+    }
+    if (ok + same == n && ok) { char w[256]; if (ok == 1) snprintf(w, sizeof w, "%.100s into %.100s", base(out), base(drop_dir)); else snprintf(w, sizeof w, "%d items into %.100s", ok, base(drop_dir)); say(0, ctrl ? "Copied %s" : "Moved %s", w); }
+    else if (ok + same == n) say(1, "Already in %s", base(drop_dir));
+    free_list(l, n); drop_ci = -1; clear_marks(); reload_all(NULL);
+}
+
 static void input_key(KeySym ks, const char *buf, int n) {
     if (ks == XK_Escape) { mode = M_NONE; return; }
     if (ks == XK_Return || ks == XK_KP_Enter) { commit_input(); return; }
@@ -416,11 +556,7 @@ static void key(XKeyEvent *ke) {
     if (ks == XK_space) { if (c->sel >= 0) { c->e[c->sel].marked = !c->e[c->sel].marked; if (c->sel + 1 < c->n) { select_row(active, c->sel + 1); keep_visible(&col[active]); } } return; }
     if (ks == XK_Escape) { clear_marks(); return; }
     if (ks == XK_o) { begin_input(M_OPENWITH); return; }
-    if (ks == XK_Return || ks == XK_KP_Enter) {
-        if (c->sel >= 0 && c->e[c->sel].dir) { if (active + 1 < depth) { active++; if (col[active].sel < 0 && col[active].n) select_row(active, 0); } }
-        else { int n; char **l = gather(&n); open_default(l, n); free_list(l, n); }
-        return;
-    }
+    if (ks == XK_Return || ks == XK_KP_Enter) { open_selection(); return; }
     if (ctrl && ks == XK_z) { do_undo(); return; }
     if (ks == XK_t) { toggle_trash(); return; }
     if (ks == XK_r) { restore_selected(); return; }
@@ -449,7 +585,8 @@ int main(int argc, char **argv) {
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 100, 100, (unsigned)width, (unsigned)height, 0, 0, th.face);
     XStoreName(dpy, win, "File Viewer"); XClassHint ch = { "wmfiles", "WMFiles" }; XSetClassHint(dpy, win, &ch);
     Atom del = XInternAtom(dpy, "WM_DELETE_WINDOW", False); XSetWMProtocols(dpy, win, &del, 1);
-    XSelectInput(dpy, win, ExposureMask | ButtonPressMask | KeyPressMask | StructureNotifyMask);
+    XSelectInput(dpy, win, ExposureMask | ButtonPressMask | ButtonReleaseMask | ButtonMotionMask | KeyPressMask | StructureNotifyMask);
+    hand_cursor = XCreateFontCursor(dpy, 60);                    /* XC_hand2 */
     gc = XCreateGC(dpy, win, 0, NULL);
     XSetLocaleModifiers("");
     XIM xim = XOpenIM(dpy, NULL, NULL, NULL);
@@ -463,17 +600,44 @@ int main(int argc, char **argv) {
         while (XPending(dpy)) {
             XEvent ev; XNextEvent(dpy, &ev);
             if (XFilterEvent(&ev, None)) continue;
+            if (menu_win && ev.xany.window == menu_win) { menu_event(&ev); continue; }
             switch (ev.type) {
             case Expose: if (ev.xexpose.count == 0) redraw(); break;
             case ConfigureNotify: width = ev.xconfigure.width; height = ev.xconfigure.height; redraw(); break;
             case ButtonPress: {
                 int cw = width / VISIBLE, ci = first_visible() + ev.xbutton.x / cw;
-                if (ev.xbutton.button == 1) click(ev.xbutton.x, ev.xbutton.y, ev.xbutton.state);
+                if (ev.xbutton.button == 1) {
+                    click(ev.xbutton.x, ev.xbutton.y, ev.xbutton.state);
+                    drag_state = 0;
+                    if (!(ev.xbutton.state & (ControlMask | ShiftMask)) && ci < depth && ev.xbutton.y >= TOP && ev.xbutton.y < height - SB) {
+                        int row = (ev.xbutton.y - TOP) / ROWH + col[ci].scroll;
+                        if (row < col[ci].n) { drag_state = 1; drag_ci = ci; drag_row = row; press_x = ev.xbutton.x; press_y = ev.xbutton.y; }
+                    }
+                } else if (ev.xbutton.button == 3 && !mode) {
+                    int on_row = 0;
+                    if (ci < depth && ev.xbutton.y >= TOP && ev.xbutton.y < height - SB) {
+                        Column *c = &col[ci]; int row = (ev.xbutton.y - TOP) / ROWH + c->scroll;
+                        if (row < c->n) { if (!c->e[row].marked) { clear_marks(); select_row(ci, row); } active = ci; c->sel = row; on_row = 1; }
+                        else active = ci;
+                    }
+                    redraw(); menu_open(ev.xbutton.x_root, ev.xbutton.y_root, on_row); break;
+                }
                 else if ((ev.xbutton.button == 4 || ev.xbutton.button == 5) && ci < depth) {
                     Column *c = &col[ci]; int mx = c->n - ROWS; if (mx < 0) mx = 0;
                     c->scroll += ev.xbutton.button == 4 ? -3 : 3; if (c->scroll < 0) c->scroll = 0; if (c->scroll > mx) c->scroll = mx;
                 }
                 redraw(); break; }
+            case MotionNotify:
+                if (drag_state == 1 && (abs(ev.xmotion.x - press_x) > 5 || abs(ev.xmotion.y - press_y) > 5)) { drag_state = 2; if (hand_cursor) XDefineCursor(dpy, win, hand_cursor); }
+                if (drag_state == 2) {
+                    drop_target(ev.xmotion.x, ev.xmotion.y);
+                    if (drop_dir[0]) say(0, (ev.xmotion.state & ControlMask) ? "Copy into %s" : "Move into %s", base(drop_dir)); else msg[0] = 0;
+                    redraw();
+                }
+                break;
+            case ButtonRelease:
+                if (ev.xbutton.button == 1 && drag_state) { if (drag_state == 2) drop_target(ev.xbutton.x, ev.xbutton.y); drag_finish(ev.xbutton.state & ControlMask); redraw(); }
+                break;
             case KeyPress: key(&ev.xkey); redraw(); break;
             case ClientMessage: if ((Atom)ev.xclient.data.l[0] == del) return 0; break;
             }

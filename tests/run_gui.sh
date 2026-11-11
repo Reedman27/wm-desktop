@@ -39,7 +39,8 @@ NB="gdbus call --session --dest org.freedesktop.Notifications --object-path /org
 
 # ------------------------------------------------------------------ wmnotify
 theme "#336699" "rgb:aa/00/00" "#ffffff" "#00ff00" "#ffcc00"; bump
-build/wmnotify 2>"$T/nerr" & NP=$!; PIDS="$PIDS $NP"; sleep 1
+build/wmnotify 2>"$T/nerr" & NP=$!; PIDS="$PIDS $NP"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do grep -q 'theme from' "$T/nerr" 2>/dev/null && break; sleep 0.5; done; sleep 0.5      # slow machines: wait, do not guess
 grep -q 'theme from 1 Window Maker defaults file' "$T/nerr" || fail "wmnotify did not read the theme file: $(cat "$T/nerr")"
 $NB.GetServerInformation | grep -q wmnotify || fail "GetServerInformation"
 $NB.GetCapabilities | grep -q body            || fail "GetCapabilities"
@@ -248,5 +249,47 @@ $P click $F 60 $(row 1); k Return; sleep 0.3
 $P click $F 60 $(row 2); k o t o u c h Return; sleep 0.3
 [ "$(stat -c %Y "$MS/ow.txt")" -gt 1500000000 ] || fail "open with (o, typed command) did not run"
 kill -0 $FP 2>/dev/null || fail "wmfiles died in the multi-select tests: $(cat "$T/ferr3")"
+# right-click menu and drag and drop
+kill $FP 2>/dev/null; sleep 0.3
+measure() { $P click $F 60 32; sleep 0.3; HL=$($P pixel $F 60 32); RT=32; while [ "$($P pixel $F 60 $((RT - 1)))" = "$HL" ]; do RT=$((RT - 1)); done
+            RB=32; while [ "$($P pixel $F 60 $((RB + 1)))" = "$HL" ]; do RB=$((RB + 1)); done; RH=$((RB - RT + 1)); }
+mitem() {   # mitem N: click the Nth (0-based) entry of the open context menu (the menu has 8 entries outside the trash)
+  set -- $($P find WMFilesMenu | head -1); [ -n "$1" ] || fail "context menu did not open"
+  $P click $1 12 $((1 + $2 * 0 + ($6 - 2) / 8 * $MI + ($6 - 2) / 16)); sleep 0.4; }
+CM="$T/cm"; mkdir -p "$CM/d"; echo a > "$CM/a.txt"; echo b > "$CM/b.txt"
+XDG_DATA_HOME="$T/xdg" build/wmfiles "$CM" 2>"$T/ferr4" & FP=$!; PIDS="$PIDS $FP"; sleep 1
+F=$($P find WMFiles | cut -d' ' -f1); [ -n "$F" ] || fail "wmfiles (menu) did not start: $(cat "$T/ferr4")"
+measure; row() { echo $((RT + $1 * RH + RH / 2)); }
+$P click $F 60 $(row 1) 3; sleep 0.4                                  # right-click a.txt
+set -- $($P find WMFilesMenu); [ $# -eq 6 ] || fail "right-click did not open a menu: $*"
+MI=7 mitem; [ ! -e "$CM/a.txt" ] && [ -f "$T/xdg/Trash/files/a.txt" ] || fail "menu: Move to Trash did not trash a.txt"
+[ -z "$($P find WMFilesMenu)" ] || fail "menu stayed open after choosing an item"
+$P click $F 60 $(row 1) 3; sleep 0.4; MI=4 mitem                       # right-click b.txt, Copy
+$P click $F 60 $(row 0); sleep 0.3                                     # select folder d: its column opens on the right
+$P click $F 300 $(row 4) 3; sleep 0.4; MI=6 mitem                      # right-click empty space in d's column, Paste
+[ -f "$CM/d/b.txt" ] && [ -f "$CM/b.txt" ] || fail "menu: Copy then Paste into the right-clicked column ($(ls "$CM/d"))"
+$P click $F 300 $(row 4) 3; sleep 0.4; MI=7 mitem                      # Move to Trash is disabled with nothing under the pointer
+[ -f "$CM/d/b.txt" ] && [ -f "$CM/b.txt" ] || fail "a disabled menu item did something"
+$P click $F 60 $(row 1) 3; sleep 0.4; M=$($P find WMFilesMenu | cut -d' ' -f1); $P key $M Escape; sleep 0.3
+[ -z "$($P find WMFilesMenu)" ] || fail "Escape did not close the menu"
+$P click $F 60 $(row 1) 3; sleep 0.4; M=$($P find WMFilesMenu | cut -d' ' -f1); $P click $M -15 -15; sleep 0.3
+[ -z "$($P find WMFilesMenu)" ] && [ -f "$CM/b.txt" ] || fail "clicking outside the menu must only close it"
+kill $FP 2>/dev/null; sleep 0.3
+DD="$T/dd"; mkdir -p "$DD/d1" "$DD/d2"; echo 1 > "$DD/f1.txt"; echo 2 > "$DD/f2.txt"
+XDG_DATA_HOME="$T/xdg" build/wmfiles "$DD" 2>"$T/ferr5" & FP=$!; PIDS="$PIDS $FP"; sleep 1
+F=$($P find WMFiles | cut -d' ' -f1); [ -n "$F" ] || fail "wmfiles (dnd) did not start: $(cat "$T/ferr5")"
+measure; row() { echo $((RT + $1 * RH + RH / 2)); }                    # rows: d1, d2, f1, f2
+$P drag $F 60 $(row 2) 60 $(row 0); sleep 0.5
+[ -f "$DD/d1/f1.txt" ] && [ ! -e "$DD/f1.txt" ] || fail "dragging a file onto a folder did not move it"
+$P drag $F 60 $(row 2) 60 $(row 1) ctrl; sleep 0.5                    # f2 is row 2 now: ctrl-drop onto d2 copies
+[ -f "$DD/d2/f2.txt" ] && [ -f "$DD/f2.txt" ] || fail "Ctrl-drag did not copy"
+k ctrl+z; [ ! -e "$DD/d2/f2.txt" ] && [ -f "$DD/f2.txt" ] || fail "undo of a drag copy"
+k ctrl+z; [ -f "$DD/f1.txt" ] && [ ! -e "$DD/d1/f1.txt" ] || fail "undo of a drag move"
+$P click $F 60 $(row 2) "1+ctrl"; $P click $F 60 $(row 3) "1+ctrl"; sleep 0.3          # mark f1 and f2
+$P drag $F 60 $(row 2) 60 $(row 0); sleep 0.5
+[ -f "$DD/d1/f1.txt" ] && [ -f "$DD/d1/f2.txt" ] && [ ! -e "$DD/f1.txt" ] && [ ! -e "$DD/f2.txt" ] || fail "dragging a marked row must move every marked item"
+$P drag $F 60 $(row 0) 60 $(row 0); sleep 0.3                          # a folder dropped on itself: nothing happens
+[ -d "$DD/d1" ] && [ -f "$DD/d1/f1.txt" ] || fail "dropping a folder on itself changed something"
+kill -0 $FP 2>/dev/null || fail "wmfiles died in the menu/drag tests: $(cat "$T/ferr4" "$T/ferr5")"
 echo "ok: wmfiles"
 echo "all GUI tests passed"
