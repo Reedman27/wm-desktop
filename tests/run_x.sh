@@ -60,4 +60,11 @@ ok=0; for i in 1 2 3 4 5 6 7 8 9 10; do build/wmdock list | grep -q 'Gnome-calcu
 sleep 2
 grep -q '^open.*org.gnome.Calculator' "$T/watch"  || fail "dock watch: open event"
 grep -q '^close.*org.gnome.Calculator' "$T/watch" || fail "dock watch: close event"
+# wmtheme show: reports what the theme layer resolved
+WT=$(WMAKER_USER_ROOT="$T/wtgs" WMTHEME_GLOBAL=/nonexistent build/wmtheme show); echo "$WT" | grep -q "built-in defaults" || fail "wmtheme show without a theme file"
+mkdir -p "$T/wtgs/Defaults"; printf '{ MenuTextBack = (dgradient, "#112233", "#445566"); MenuTitleColor = "#abcdef"; }\n' > "$T/wtgs/Defaults/WindowMaker"
+WT=$(WMAKER_USER_ROOT="$T/wtgs" WMTHEME_GLOBAL=/nonexistent build/wmtheme show)
+echo "$WT" | grep -q "MenuTextBack *dgradient #112233 #445566" && echo "$WT" | grep -q "MenuTitleColor *#abcdef" || fail "wmtheme show: $WT"
+[ "$(WMAKER_USER_ROOT="$T/wtgs" build/wmtheme path)" = "$T/wtgs/Defaults/WindowMaker" ] || fail "wmtheme path"
+
 echo "all X tests passed"

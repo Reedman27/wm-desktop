@@ -1,0 +1,15 @@
+.TH WMTHEME 1 "wm-desktop" "wm-desktop" "User Commands"
+.SH NAME
+wmtheme \- show how the wm-desktop tools see your Window Maker theme
+.SH SYNOPSIS
+.B wmtheme
+show | path
+.SH DESCRIPTION
+\fBshow\fR prints the menu colours, textures (kind and every colour) and fonts that wmnotify and wmfiles use, and
+how many defaults files they came from: your WindowMaker defaults file, then the global one, then Window Maker's
+built-in values. \fBpath\fR prints the user defaults file that is watched for theme changes
+($WMAKER_USER_ROOT/Defaults/WindowMaker, default ~/GNUstep/Defaults/WindowMaker).
+Run it first when something does not look like your theme.
+.SH SEE ALSO
+.BR wmnotify (1),
+.BR wmfiles (1)

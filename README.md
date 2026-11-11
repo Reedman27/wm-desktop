@@ -143,6 +143,11 @@ Window Maker menu, not pixel-identical to one.
 
 `wmnotifyctl dnd on|off|toggle`, `mute APP`, `unmute APP`, `history`, `test` wrap the settings above.
 
+### Theme check
+    wmtheme show      # the colours, textures and fonts the add-ons resolved from your Window Maker theme
+    wmtheme path      # the defaults file that is watched
+Run it first when something does not look like your theme.
+
 ### Autostart
     wm-autostart install [--no-menu] [--no-notify] [--dry-run]    # start wmmenud and wmnotify with Window Maker
     wm-autostart status | remove

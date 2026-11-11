@@ -53,7 +53,7 @@ HAVE_NOTIFY := $(if $(filter no,$(WITH_NOTIFY)),,$(and $(XFT_LIBS),$(DBUS_LIBS))
 HAVE_FILES := $(if $(filter no,$(WITH_FILES)),,$(XFT_LIBS))
 NOTIFY := $(if $(HAVE_NOTIFY),build/wmnotify build/wmnotify-send)
 
-BINS = build/wmapps build/wmmenud build/wmgfx build/wmdock build/wmsettings $(if $(HAVE_FILES),build/wmfiles) $(NOTIFY)
+BINS = build/wmapps build/wmmenud build/wmgfx build/wmdock build/wmsettings build/wmtheme $(if $(HAVE_FILES),build/wmfiles) $(NOTIFY)
 SCRIPTS = tools/wm-autostart $(if $(HAVE_NOTIFY),tools/wmnotifyctl)
 
 all: $(BINS)
@@ -67,6 +67,9 @@ build/wmmenud: tools/wmmenud.c $(APPS) $(MENU) $(WATCH) $(CONF) $(HDRS)
 build/wmdock: shell/dock/wmdock.c $(APPS) $(MENU) $(ICONS) $(CONF) $(THEME) $(HDRS)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ shell/dock/wmdock.c $(APPS) $(MENU) $(ICONS) $(CONF) $(THEME) $(X11LIBS)
+build/wmtheme: tools/wmtheme.c $(THEME) $(HDRS)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/wmtheme.c $(THEME)
 build/wmsettings: shell/settings/wmsettings.c $(CONF)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ shell/settings/wmsettings.c $(CONF)
